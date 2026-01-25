@@ -1,0 +1,8 @@
+{
+  "saldoBase": "1000000000000000000",
+  "saldoQuote": "10000000000000000000",
+  "amountBase": "100000000000000000",
+  "amountQuote": "300000000000000000",
+  "midpointPrice": "3",
+  "toleranceBps": "100"
+}

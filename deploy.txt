@@ -1,0 +1,58 @@
+arbitrum RPC = https://sepolia-rollup.arbitrum.io/rpc
+base RPC = 
+
+VERIFIER ADDRESS = 0x05F17Cfc5278Ba252459316E689f28eDC26a58b8
+BASE TOKEN = 0x196c951CBA28dD804714d084cd8a6DeDBE53127e
+QUOTE TOKEN = 0xBCD0Cf51550373aC5aDfD46Ff7134Ad1Cd725cEC
+DarkPool ADDRESS = 0x11dB70F30532318089D5F17ef803750bcb980Abf
+
+
+# 1. Deploy Verifier
+forge create contracts/Verifier.sol:Groth16Verifier \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --broadcast \
+  --verify \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160
+
+# Output: Deployed to: 0x1234...
+
+# 2. Deploy Base Token
+forge create contracts/MockERC20.sol:MockERC20 \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --broadcast \
+  --verify \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160 \
+  --constructor-args "Mock WETH" "MWETH"
+
+# Output: Deployed to: 0x5678...
+
+# 3. Deploy Quote Token
+forge create contracts/MockERC20.sol:MockERC20 \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --broadcast \
+  --verify \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160 \
+  --constructor-args "Mock USDC" "MUSDC"
+
+# Output: Deployed to: 0x9abc...
+
+# 4. Deploy DarkPool (ganti dengan address yang didapat dari langkah 1-3)
+forge create contracts/DarkPool.sol:DarkPool \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --broadcast \
+  --verify \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160 \
+  --constructor-args 0xaACDbc35FcDdc9A86e3F6DeC3bA0f3012e98F84D 0x1D9445f029E0F8109Be52D6422aBd73625F38752 0xF6939a5bBD40BECE31fB2cBfFfB5Bac39D054377
+
+forge verify-contract 0x11dB70F30532318089D5F17ef803750bcb980Abf contracts/DarkPool.sol:DarkPool --chain-id 421614 --etherscan-api-key W1FN57MAGDBNNGAQNGDTP8IWXGM262C2AV --constructor-args $(cast abi-encode "constructor(address,address,address)" 0x05F17Cfc5278Ba252459316E689f28eDC26a58b8 0x196c951CBA28dD804714d084cd8a6DeDBE53127e 0xBCD0Cf51550373aC5aDfD46Ff7134Ad1Cd725cEC)
+
+//verify
+forge verify-contract \
+ 0x1FCAd9Be4fBF4F3D3485363D5E547534230cA990 \ 
+  contracts/DarkPool.sol:DarkPool \
+  --chain-id 421614 \
+  --etherscan-api-key W1FN57MAGDBNNGAQNGDTP8IWXGM262C2AV \  
+  --constructor-args $(cast abi-encode "constructor(address,address,address)" 0xaACDbc35FcDdc9A86e3F6DeC3bA0f3012e98F84D 0x1D9445f029E0F8109Be52D6422aBd73625F38752 0xF6939a5bBD40BECE31fB2cBfFfB5Bac39D054377)
+
+
+  forge verify-contract 0xaACDbc35FcDdc9A86e3F6DeC3bA0f3012e98F84D contracts/MockERC20.sol:MockERC20 --chain-id 421614 --etherscan-api-key W1FN57MAGDBNNGAQNGDTP8IWXGM262C2AV --constructor-args 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160
