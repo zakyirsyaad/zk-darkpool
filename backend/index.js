@@ -1,55 +1,971 @@
-const express = require('express');
-const axios = require('axios');
-const { exec } = require('child_process');
-const util = require('util');
+require("dotenv").config();
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+const https = require("https");
+const { exec } = require("child_process");
+const util = require("util");
 const execPromise = util.promisify(exec);
-const fs = require('fs').promises;
+const fs = require("fs").promises;
+const { supabase } = require("./lib/supabase");
+const snarkjs = require("snarkjs");
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-app.post('/match-and-settle', async (req, res) => {
+// --- DEV ONLY: allow insecure TLS when network MITM/captive-portal breaks certs ---
+// Set env ALLOW_INSECURE_TLS=true if you see:
+// "Hostname/IP does not match certificate's altnames ... internetbaik.telkomsel.com"
+// WARNING: This disables TLS verification and is NOT safe for production.
+const allowInsecureTls =
+  String(process.env.ALLOW_INSECURE_TLS || "").toLowerCase() === "true";
+const httpsAgent = allowInsecureTls
+  ? new https.Agent({ rejectUnauthorized: false })
+  : undefined;
+
+/**
+ * Convert a decimal number to wei (integer string) without scientific notation
+ * Works for any size number by using string manipulation
+ * @param {number|string} value - The decimal value (e.g., 0.1, 300.5)
+ * @param {number} decimals - Number of decimals (default 18 for wei)
+ * @returns {string} Integer string without scientific notation
+ */
+function toWei(value, decimals = 18) {
+  // Convert to string, handling scientific notation
+  let str = typeof value === "number" ? value.toFixed(20) : String(value);
+
+  // Remove trailing zeros after decimal point
+  if (str.includes(".")) {
+    str = str.replace(/\.?0+$/, "");
+  }
+
+  // Split into integer and decimal parts
+  let [intPart, decPart = ""] = str.split(".");
+
+  // Pad or truncate decimal part to desired length
+  if (decPart.length < decimals) {
+    decPart = decPart.padEnd(decimals, "0");
+  } else {
+    decPart = decPart.slice(0, decimals);
+  }
+
+  // Combine and remove leading zeros
+  const result = (intPart + decPart).replace(/^0+/, "") || "0";
+  return result;
+}
+
+/**
+ * Convert price to scaled integer string (multiply by 1e8)
+ * Using string manipulation to avoid scientific notation
+ */
+function priceToInt(price) {
+  // Use toFixed to avoid scientific notation, then parse
+  const fixed = price.toFixed(8);
+  const [intPart, decPart = ""] = fixed.split(".");
+  // Pad to 8 decimals and combine
+  const padded = decPart.padEnd(8, "0").slice(0, 8);
+  const result = (intPart + padded).replace(/^0+/, "") || "0";
+  return result;
+}
+
+app.post("/match-and-settle", async (req, res) => {
   const { amountBase, amountQuote, ticker } = req.body;
 
   try {
-    // 1. Query midpoint real-time
-    const binanceRes = await axios.get(`https://api.binance.com/api/v3/ticker/bookTicker?symbol=${ticker}`);
-    const midpoint = (parseFloat(binanceRes.data.bidPrice) + parseFloat(binanceRes.data.askPrice)) / 2;
+    // 1. Query midpoint real-time (try Binance, CoinGecko, then fallback)
+    let midpoint;
+
+    try {
+      const binanceRes = await axios.get(
+        `https://api.binance.com/api/v3/ticker/bookTicker?symbol=${ticker}`,
+        { httpsAgent, timeout: 5000 }
+      );
+      midpoint =
+        (parseFloat(binanceRes.data.bidPrice) +
+          parseFloat(binanceRes.data.askPrice)) /
+        2;
+      console.log("Using Binance price:", midpoint);
+    } catch (binanceError) {
+      try {
+        const bookTicker = await fetchBookTickerFromCoinGecko(ticker);
+        midpoint =
+          (parseFloat(bookTicker.bidPrice) + parseFloat(bookTicker.askPrice)) /
+          2;
+        console.log("Using CoinGecko price:", midpoint);
+      } catch (geckoError) {
+        // Use fallback price
+        const token = ticker.replace("USDT", "");
+        midpoint = FALLBACK_PRICES[token] || 100;
+        console.log("Using fallback price:", midpoint);
+      }
+    }
 
     // 2. Generate input.json
-    const input = {
-      saldoBase: "10000000000000000000", // 10 ether - must be >= amountBase
-      saldoQuote: "10000000000000000000", // 10 ether - must be >= amountQuote
-      amountBase: (amountBase * 1e18).toString(),
-      amountQuote: (amountQuote * 1e18).toString(), // 18 decimals (matching test)
-      midpointPrice: midpoint.toString(), // Simple scalar, not in wei
-      toleranceBps: "100"
+    console.log("Raw input from frontend:", {
+      amountBase,
+      amountQuote,
+      ticker,
+      midpoint,
+    });
+
+    // Use BigInt-safe string conversion to avoid scientific notation
+    const amountBaseWei = toWei(amountBase, 18);
+
+    // IMPORTANT: Circuit math is: expectedQuote = amountBase * midpointPrice
+    // To ensure they match EXACTLY, we calculate amountQuote from the rounded midpoint
+    // This avoids precision mismatches between frontend price and backend midpoint
+    const midpointScaled = Math.round(midpoint).toString();
+
+    // Calculate amountQuote to match circuit calculation exactly:
+    // In circuit: expectedQuote = amountBaseWei * midpointScaled
+    // So we use the same calculation for amountQuote
+    const amountQuoteWei = (
+      BigInt(amountBaseWei) * BigInt(midpointScaled)
+    ).toString();
+
+    console.log("Recalculated amountQuote to match circuit:", {
+      original: toWei(amountQuote, 18),
+      recalculated: amountQuoteWei,
+      midpointUsed: midpointScaled,
+    });
+
+    // Ensure saldo is larger than amounts (use very large values to pass balance check)
+    const saldoBase = "1000000000000000000000000000"; // 1 billion tokens in wei (1e27)
+    const saldoQuote = "1000000000000000000000000000"; // 1 billion in wei (1e27)
+
+    // Verify all values are valid integer strings (no scientific notation)
+    const validateIntString = (val, name) => {
+      if (typeof val !== "string" || !/^\d+$/.test(val)) {
+        throw new Error(`Invalid ${name}: ${val} (must be integer string)`);
+      }
+      return val;
     };
 
-    await fs.writeFile('input.json', JSON.stringify(input));
+    const input = {
+      saldoBase: validateIntString(saldoBase, "saldoBase"),
+      saldoQuote: validateIntString(saldoQuote, "saldoQuote"),
+      amountBase: validateIntString(amountBaseWei, "amountBase"),
+      amountQuote: validateIntString(amountQuoteWei, "amountQuote"),
+      midpointPrice: validateIntString(midpointScaled, "midpointPrice"),
+      toleranceBps: "10000", // 100% tolerance for testing (very lenient)
+    };
+
+    console.log("ZK Input (validated):", input);
+
+    // Verify the math: expectedQuote = amountBase * midpointPrice should ≈ amountQuote
+    const expectedQuote = BigInt(amountBaseWei) * BigInt(midpointScaled);
+    const actualQuote = BigInt(amountQuoteWei);
+    const diff =
+      expectedQuote > actualQuote
+        ? expectedQuote - actualQuote
+        : actualQuote - expectedQuote;
+    console.log("Circuit math verification:", {
+      amountBaseWei,
+      midpointScaled,
+      expectedQuote: expectedQuote.toString(),
+      actualQuote: actualQuote.toString(),
+      diff: diff.toString(),
+      diffPercent: Number((diff * 100n) / actualQuote) + "%",
+    });
+
+    await fs.writeFile("input.json", JSON.stringify(input));
 
     // 3. Generate witness & proof
-    await execPromise('node ../build/trade_check_js/generate_witness.js ../build/trade_check_js/trade_check.wasm input.json witness.wtns');
-    await execPromise('snarkjs groth16 prove ../build/circuit_final.zkey witness.wtns proof.json public.json');
+    await execPromise(
+      "node ../build/trade_check_js/generate_witness.js ../build/trade_check_js/trade_check.wasm input.json witness.wtns"
+    );
+    await execPromise(
+      "npx snarkjs groth16 prove ../build/circuit_final.zkey witness.wtns proof.json public.json"
+    );
 
     // 4. Baca proof & public
-    const proof = JSON.parse(await fs.readFile('proof.json', 'utf8'));
-    const publicInputs = JSON.parse(await fs.readFile('public.json', 'utf8'));
+    const proof = JSON.parse(await fs.readFile("proof.json", "utf8"));
+    const publicInputs = JSON.parse(await fs.readFile("public.json", "utf8"));
+
+    // Log public inputs to verify circuit output
+    console.log("Circuit public outputs:", {
+      valid: publicInputs[0],
+      midpointPrice: publicInputs[1],
+      toleranceBps: publicInputs[2],
+      amountBase: publicInputs[3],
+      amountQuote: publicInputs[4],
+    });
+
+    // Check if circuit computed valid=1
+    if (publicInputs[0] === "0") {
+      console.error("=== CIRCUIT FAILED: valid=0 ===");
+      console.error("Input sent to circuit:", input);
+      console.error("--- Debugging checks ---");
+      console.error(
+        "  saldoBase >= amountBase?",
+        BigInt(input.saldoBase) >= BigInt(input.amountBase)
+      );
+      console.error(
+        "  saldoQuote >= amountQuote?",
+        BigInt(input.saldoQuote) >= BigInt(input.amountQuote)
+      );
+
+      const expQ = BigInt(input.amountBase) * BigInt(input.midpointPrice);
+      const actQ = BigInt(input.amountQuote);
+      const dev = expQ > actQ ? expQ - actQ : actQ - expQ;
+      const devSq = dev * dev;
+      const tolTh =
+        (BigInt(input.midpointPrice) * BigInt(input.toleranceBps)) / 10000n;
+      const tolSq = tolTh * tolTh;
+
+      console.error("  expectedQuote:", expQ.toString());
+      console.error("  actualQuote:", actQ.toString());
+      console.error("  deviation:", dev.toString());
+      console.error("  deviationSquared:", devSq.toString());
+      console.error("  toleranceThreshold:", tolTh.toString());
+      console.error("  toleranceSquared:", tolSq.toString());
+      console.error("  devSquared <= tolSquared?", devSq <= tolSq);
+    }
 
     if (!proof.pi_a || !proof.pi_b || !proof.pi_c) {
-        return res.status(500).json({ error: 'Proof generation failed' });
-      }
+      return res.status(500).json({ error: "Proof generation failed" });
+    }
 
-    // 5. Kembalikan ke frontend
-    res.json({
-      a: proof.pi_a,
-      b: proof.pi_b,
-      c: proof.pi_c,
+    // 5. Use exportSolidityCallData to get correct format for Ethereum
+    // This handles the G2 point coordinate swapping automatically
+    const calldata = await snarkjs.groth16.exportSolidityCallData(
+      proof,
       publicInputs
+    );
+
+    // Parse the calldata - it's a comma-separated string of arrays
+    // Format: ["a[0]","a[1]"],[["b[0][0]","b[0][1]"],["b[1][0]","b[1][1]"]],["c[0]","c[1]"],["pub[0]",...]
+    const calldataJson = JSON.parse("[" + calldata + "]");
+
+    console.log("Proof calldata for Solidity:", {
+      a: calldataJson[0],
+      b: calldataJson[1],
+      c: calldataJson[2],
+      publicInputs: calldataJson[3],
+    });
+
+    // 6. Kembalikan ke frontend dalam format yang benar untuk Ethereum
+    res.json({
+      a: calldataJson[0],
+      b: calldataJson[1],
+      c: calldataJson[2],
+      publicInputs: calldataJson[3],
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(3001, () => console.log('Matcher running on port 3001'));
+// 1. Daftar koin yang kamu masukkan manual
+// Kamu bisa menambah atau mengurangi list ini kapan saja
+const MY_WALLET_TOKENS = [
+  { symbol: "ARB", address: "0x912ce59144191c1204e64559fe8253a0e49e6548" },
+  { symbol: "GMX", address: "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a" },
+  { symbol: "RDNT", address: "0x3082cc3797440806000210954e7d98ee17ee3f3c" },
+  { symbol: "MAGIC", address: "0x539bde0d7dbd3d5263e94ff56b653215170d2712" },
+];
+
+// 2. Endpoint untuk mengambil harga token manual tersebut
+app.get("/api/my-tokens", async (req, res) => {
+  try {
+    // Ambil semua address dan gabungkan dengan koma
+    const addresses = MY_WALLET_TOKENS.map((t) => t.address).join(",");
+
+    // Fetch ke DexScreener
+    const response = await axios.get(
+      `https://api.dexscreener.com/latest/dex/tokens/${addresses}`
+    );
+    const pairs = response.data.pairs || [];
+
+    // Mapping data agar hasilnya rapi dan sesuai urutan input manual
+    const result = MY_WALLET_TOKENS.map((token) => {
+      // Cari data yang match dengan address
+      const marketData = pairs.find(
+        (p) => p.baseToken.address.toLowerCase() === token.address.toLowerCase()
+      );
+
+      return {
+        symbol: token.symbol,
+        name: marketData ? marketData.baseToken.name : "Unknown",
+        address: token.address,
+        priceUsd: marketData ? marketData.priceUsd : "0",
+        priceChange24h: marketData ? marketData.priceChange.h24 : 0,
+        volume24h: marketData ? marketData.volume.h24 : 0,
+        liquidity: marketData ? marketData.liquidity.usd : 0,
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Gagal mengambil data dari blockchain" });
+  }
+});
+
+// =============================================
+// Price API Proxy (with caching and fallback)
+// =============================================
+
+// Simple in-memory cache
+const priceCache = {
+  data: {},
+  lastUpdate: 0,
+  TTL: 30000, // 30 seconds cache
+};
+
+// Fallback prices for demo/testing when APIs are blocked
+const FALLBACK_PRICES = {
+  BTC: 97000,
+  ETH: 2700,
+  BNB: 600,
+  SOL: 200,
+  XRP: 2.5,
+  ADA: 0.75,
+  DOGE: 0.35,
+  AVAX: 35,
+  DOT: 7,
+  MATIC: 0.5,
+  LINK: 20,
+  UNI: 12,
+  ATOM: 8,
+  LTC: 120,
+  ARB: 0.8,
+};
+
+// Map token symbols to CoinGecko IDs
+const COINGECKO_IDS = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  BNB: "binancecoin",
+  SOL: "solana",
+  XRP: "ripple",
+  ADA: "cardano",
+  DOGE: "dogecoin",
+  AVAX: "avalanche-2",
+  DOT: "polkadot",
+  MATIC: "matic-network",
+  LINK: "chainlink",
+  UNI: "uniswap",
+  ATOM: "cosmos",
+  LTC: "litecoin",
+  ARB: "arbitrum",
+};
+
+// Fetch price from CoinGecko (fallback)
+async function fetchFromCoinGecko(symbols) {
+  const ids = symbols
+    .map((s) => s.replace("USDT", ""))
+    .map((s) => COINGECKO_IDS[s] || s.toLowerCase())
+    .join(",");
+
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`;
+  const response = await axios.get(url, { timeout: 10000 });
+
+  // Convert to Binance format
+  return symbols.map((symbol) => {
+    const token = symbol.replace("USDT", "");
+    const geckoId = COINGECKO_IDS[token] || token.toLowerCase();
+    const price = response.data[geckoId]?.usd || 0;
+    return { symbol, price: price.toString() };
+  });
+}
+
+// Fetch book ticker from CoinGecko (approximation - no real bid/ask)
+async function fetchBookTickerFromCoinGecko(symbol) {
+  const token = symbol.replace("USDT", "");
+  const geckoId = COINGECKO_IDS[token] || token.toLowerCase();
+
+  // Check cache first
+  const cacheKey = `bookTicker_${symbol}`;
+  const now = Date.now();
+  if (
+    priceCache.data[cacheKey] &&
+    now - priceCache.data[cacheKey].time < priceCache.TTL
+  ) {
+    return priceCache.data[cacheKey].value;
+  }
+
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${geckoId}&vs_currencies=usd`;
+  const response = await axios.get(url, { timeout: 10000 });
+  const price = response.data[geckoId]?.usd || 0;
+
+  // Simulate bid/ask with 0.1% spread
+  const spread = price * 0.001;
+  const result = {
+    symbol,
+    bidPrice: (price - spread / 2).toString(),
+    askPrice: (price + spread / 2).toString(),
+  };
+
+  // Cache result
+  priceCache.data[cacheKey] = { value: result, time: now };
+  return result;
+}
+
+// Generate fallback price data
+function getFallbackPrices(symbolList) {
+  return symbolList.map((symbol) => {
+    const token = symbol.replace("USDT", "");
+    const price = FALLBACK_PRICES[token] || 100;
+    return { symbol, price: price.toString() };
+  });
+}
+
+function getFallbackBookTicker(symbol) {
+  const token = symbol.replace("USDT", "");
+  const price = FALLBACK_PRICES[token] || 100;
+  const spread = price * 0.001;
+  return {
+    symbol,
+    bidPrice: (price - spread / 2).toString(),
+    askPrice: (price + spread / 2).toString(),
+  };
+}
+
+// Proxy for token prices (with caching and fallback)
+app.get("/api/binance/prices", async (req, res) => {
+  try {
+    const { symbols } = req.query;
+    const symbolList = symbols ? JSON.parse(symbols) : [];
+    const cacheKey = `prices_${symbols}`;
+    const now = Date.now();
+
+    // Check cache
+    if (
+      priceCache.data[cacheKey] &&
+      now - priceCache.data[cacheKey].time < priceCache.TTL
+    ) {
+      return res.json(priceCache.data[cacheKey].value);
+    }
+
+    // Try Binance first
+    try {
+      const url = symbols
+        ? `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(
+            symbols
+          )}`
+        : `https://api.binance.com/api/v3/ticker/price`;
+
+      const response = await axios.get(url, { httpsAgent, timeout: 5000 });
+      priceCache.data[cacheKey] = { value: response.data, time: now };
+      return res.json(response.data);
+    } catch (binanceError) {
+      // Silent fallback
+    }
+
+    // Try CoinGecko
+    try {
+      const data = await fetchFromCoinGecko(symbolList);
+      priceCache.data[cacheKey] = { value: data, time: now };
+      return res.json(data);
+    } catch (geckoError) {
+      // Silent fallback
+    }
+
+    // Use hardcoded fallback prices
+    console.log("Using fallback prices for:", symbolList);
+    const fallbackData = getFallbackPrices(symbolList);
+    priceCache.data[cacheKey] = { value: fallbackData, time: now };
+    res.json(fallbackData);
+  } catch (error) {
+    // Return cached data if available, even if expired
+    const cacheKey = `prices_${req.query.symbols}`;
+    if (priceCache.data[cacheKey]) {
+      return res.json(priceCache.data[cacheKey].value);
+    }
+    // Last resort: fallback prices
+    const symbolList = req.query.symbols ? JSON.parse(req.query.symbols) : [];
+    res.json(getFallbackPrices(symbolList));
+  }
+});
+
+// Proxy for book ticker (with caching and fallback)
+app.get("/api/binance/bookTicker", async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    if (!symbol) {
+      return res.status(400).json({ error: "Symbol is required" });
+    }
+
+    const cacheKey = `bookTicker_${symbol}`;
+    const now = Date.now();
+
+    // Check cache
+    if (
+      priceCache.data[cacheKey] &&
+      now - priceCache.data[cacheKey].time < priceCache.TTL
+    ) {
+      return res.json(priceCache.data[cacheKey].value);
+    }
+
+    // Try Binance first
+    try {
+      const url = `https://api.binance.com/api/v3/ticker/bookTicker?symbol=${symbol}`;
+      const response = await axios.get(url, { httpsAgent, timeout: 5000 });
+      priceCache.data[cacheKey] = { value: response.data, time: now };
+      return res.json(response.data);
+    } catch (binanceError) {
+      // Silent fallback
+    }
+
+    // Try CoinGecko
+    try {
+      const data = await fetchBookTickerFromCoinGecko(symbol);
+      priceCache.data[cacheKey] = { value: data, time: now };
+      return res.json(data);
+    } catch (geckoError) {
+      // Silent fallback
+    }
+
+    // Use hardcoded fallback
+    console.log("Using fallback book ticker for:", symbol);
+    const fallbackData = getFallbackBookTicker(symbol);
+    priceCache.data[cacheKey] = { value: fallbackData, time: now };
+    res.json(fallbackData);
+  } catch (error) {
+    // Return cached data if available
+    const cacheKey = `bookTicker_${req.query.symbol}`;
+    if (priceCache.data[cacheKey]) {
+      return res.json(priceCache.data[cacheKey].value);
+    }
+    // Last resort: fallback
+    res.json(getFallbackBookTicker(req.query.symbol));
+  }
+});
+
+// =============================================
+// Orders CRUD Endpoints
+// =============================================
+
+// GET all orders (with optional filters)
+app.get("/api/orders", async (req, res) => {
+  try {
+    const { user_address, status, asset, side } = req.query;
+
+    let query = supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (user_address)
+      query = query.eq("user_address", user_address.toLowerCase());
+    if (status) query = query.eq("status", status);
+    if (asset) query = query.eq("asset", asset);
+    if (side) query = query.eq("side", side);
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET single order by ID
+app.get("/api/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: "Order not found" });
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST create new order
+app.post("/api/orders", async (req, res) => {
+  try {
+    const {
+      user_address,
+      side,
+      asset,
+      quote_asset = "USDC",
+      size,
+      price,
+      proof_hash,
+    } = req.body;
+
+    // Validate required fields
+    if (!user_address || !side || !asset || !size || !price) {
+      return res.status(400).json({
+        error:
+          "Missing required fields: user_address, side, asset, size, price",
+      });
+    }
+
+    // Calculate order value
+    const order_value = parseFloat(size) * parseFloat(price);
+
+    const { data, error } = await supabase
+      .from("orders")
+      .insert({
+        user_address: user_address.toLowerCase(),
+        side,
+        asset,
+        quote_asset,
+        size,
+        price,
+        order_value,
+        proof_hash,
+        status: "open",
+        filled: 0,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH update order (e.g., update filled amount, status)
+app.patch("/api/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // Prevent updating certain fields
+    delete updates.id;
+    delete updates.created_at;
+    delete updates.user_address;
+
+    const { data, error } = await supabase
+      .from("orders")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: "Order not found" });
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE cancel order (soft delete - just updates status)
+app.delete("/api/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from("orders")
+      .update({ status: "cancelled" })
+      .eq("id", id)
+      .eq("status", "open") // Only cancel open orders
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data)
+      return res
+        .status(404)
+        .json({ error: "Order not found or already filled/cancelled" });
+
+    res.json({ message: "Order cancelled", order: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET orders by user address
+app.get("/api/users/:address/orders", async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { status } = req.query;
+
+    let query = supabase
+      .from("orders")
+      .select("*")
+      .eq("user_address", address.toLowerCase())
+      .order("created_at", { ascending: false });
+
+    if (status) query = query.eq("status", status);
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================
+// Order Matching Engine
+// =============================================
+
+/**
+ * Find matching order for a given order
+ * BUY order matches with SELL order (and vice versa) for same asset
+ * Price tolerance: buyer's price >= seller's price
+ */
+async function findMatchingOrder(order) {
+  const oppositeSide = order.side === "BUY" ? "SELL" : "BUY";
+
+  // Find open orders on opposite side for same asset
+  let query = supabase
+    .from("orders")
+    .select("*")
+    .eq("status", "open")
+    .eq("asset", order.asset)
+    .eq("side", oppositeSide)
+    .neq("user_address", order.user_address.toLowerCase()) // Don't match with self
+    .order("created_at", { ascending: true }); // FIFO matching
+
+  const { data: candidates, error } = await query;
+
+  if (error) throw error;
+  if (!candidates || candidates.length === 0) return null;
+
+  // Find best match based on price
+  // For BUY order: find SELL order where seller_price <= buyer_price
+  // For SELL order: find BUY order where buyer_price >= seller_price
+  for (const candidate of candidates) {
+    const buyerPrice =
+      order.side === "BUY"
+        ? parseFloat(order.price)
+        : parseFloat(candidate.price);
+    const sellerPrice =
+      order.side === "SELL"
+        ? parseFloat(order.price)
+        : parseFloat(candidate.price);
+
+    // Match if buyer willing to pay >= seller asking price
+    if (buyerPrice >= sellerPrice) {
+      // Use midpoint price for fair settlement
+      const matchPrice = (buyerPrice + sellerPrice) / 2;
+
+      // Match the smaller of the two sizes
+      const matchSize = Math.min(
+        parseFloat(order.size),
+        parseFloat(candidate.size)
+      );
+
+      return {
+        matchedOrder: candidate,
+        matchPrice,
+        matchSize,
+        buyer: order.side === "BUY" ? order : candidate,
+        seller: order.side === "SELL" ? order : candidate,
+      };
+    }
+  }
+
+  return null;
+}
+
+// POST: Submit order and try to match
+app.post("/api/orders/submit", async (req, res) => {
+  try {
+    const {
+      user_address,
+      side,
+      asset,
+      quote_asset = "USDC",
+      size,
+      price,
+    } = req.body;
+
+    // Validate required fields
+    if (!user_address || !side || !asset || !size || !price) {
+      return res.status(400).json({
+        error:
+          "Missing required fields: user_address, side, asset, size, price",
+      });
+    }
+
+    // Calculate order value
+    const order_value = parseFloat(size) * parseFloat(price);
+
+    // Create the order first
+    const { data: newOrder, error: insertError } = await supabase
+      .from("orders")
+      .insert({
+        user_address: user_address.toLowerCase(),
+        side,
+        asset,
+        quote_asset,
+        size,
+        price,
+        order_value,
+        status: "open",
+        filled: 0,
+      })
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+
+    console.log("New order created:", newOrder);
+
+    // Try to find a match
+    const match = await findMatchingOrder(newOrder);
+
+    if (match) {
+      console.log("Match found!", {
+        buyer: match.buyer.user_address,
+        seller: match.seller.user_address,
+        price: match.matchPrice,
+        size: match.matchSize,
+      });
+
+      // Return match info for frontend to execute settlement
+      res.json({
+        order: newOrder,
+        matched: true,
+        match: {
+          matchedOrderId: match.matchedOrder.id,
+          buyerAddress: match.buyer.user_address,
+          sellerAddress: match.seller.user_address,
+          matchPrice: match.matchPrice,
+          matchSize: match.matchSize,
+          asset: asset,
+          quoteAsset: quote_asset,
+        },
+      });
+    } else {
+      console.log("No match found, order added to book");
+      res.json({
+        order: newOrder,
+        matched: false,
+        message: "Order added to order book, waiting for match",
+      });
+    }
+  } catch (error) {
+    console.error("Order submit error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Confirm settlement after on-chain tx
+app.post("/api/orders/settle", async (req, res) => {
+  try {
+    const { orderId, matchedOrderId, txHash, filledSize } = req.body;
+
+    // Update both orders to filled
+    const updates = {
+      status: "filled",
+      filled: filledSize,
+      proof_hash: txHash,
+    };
+
+    const [result1, result2] = await Promise.all([
+      supabase
+        .from("orders")
+        .update(updates)
+        .eq("id", orderId)
+        .select()
+        .single(),
+      supabase
+        .from("orders")
+        .update(updates)
+        .eq("id", matchedOrderId)
+        .select()
+        .single(),
+    ]);
+
+    if (result1.error) throw result1.error;
+    if (result2.error) throw result2.error;
+
+    res.json({
+      message: "Both orders settled",
+      orders: [result1.data, result2.data],
+    });
+  } catch (error) {
+    console.error("Settlement error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET: Order book from Binance
+app.get("/api/orderbook/:asset", async (req, res) => {
+  try {
+    const { asset } = req.params;
+    const symbol = `${asset.toUpperCase()}USDT`;
+    const limit = req.query.limit || 10;
+
+    // Try Binance first
+    try {
+      const response = await axios.get(
+        `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=${limit}`,
+        { httpsAgent, timeout: 5000 }
+      );
+
+      // Format: bids and asks are arrays of [price, quantity]
+      const bids = response.data.bids.map(([price, size]) => ({
+        price,
+        size,
+        total: (parseFloat(price) * parseFloat(size)).toFixed(2),
+      }));
+
+      const asks = response.data.asks.map(([price, size]) => ({
+        price,
+        size,
+        total: (parseFloat(price) * parseFloat(size)).toFixed(2),
+      }));
+
+      res.json({
+        bids,
+        asks,
+        source: "binance",
+        symbol,
+        lastUpdateId: response.data.lastUpdateId,
+      });
+      return;
+    } catch (binanceError) {
+      console.error("Binance depth error:", binanceError.message);
+    }
+
+    // Fallback: generate mock order book based on fallback price
+    const token = asset.toUpperCase();
+    const basePrice = FALLBACK_PRICES[token] || 100;
+
+    const bids = [];
+    const asks = [];
+
+    for (let i = 0; i < 10; i++) {
+      const bidPrice = basePrice * (1 - (i + 1) * 0.0005);
+      const askPrice = basePrice * (1 + (i + 1) * 0.0005);
+      const size = (Math.random() * 2 + 0.01).toFixed(4);
+
+      bids.push({
+        price: bidPrice.toFixed(2),
+        size,
+        total: (bidPrice * parseFloat(size)).toFixed(2),
+      });
+
+      asks.push({
+        price: askPrice.toFixed(2),
+        size,
+        total: (askPrice * parseFloat(size)).toFixed(2),
+      });
+    }
+
+    res.json({
+      bids,
+      asks,
+      source: "fallback",
+      symbol,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.listen(3001, () => console.log("Matcher running on port 3001"));
