@@ -4,19 +4,26 @@ import Amount from '@/components/layouts/trade/Amount'
 import Balance from '@/components/layouts/trade/Balance'
 import Info from '@/components/layouts/trade/Info'
 import Options from '@/components/layouts/trade/Options'
-import { useCreateOrder, useUpdateOrder } from '@/hooks/useOrders'
+import {
+  useSubmitOrder,
+  useConfirmSettlement,
+  useUnmatchOrders,
+  type MatchResult,
+} from '@/hooks/useOrders'
 import { useBinanceBookTicker } from '@/hooks/useBinanceBookTicker'
 import { useAccount } from 'wagmi'
 import { useDarkPool, generateProof } from '@/hooks/useDarkPool'
 import { parseUnits } from 'viem'
+import { API_BASE_URL } from '@/constants/api'
 
 type TradeStatus =
   | 'idle'
-  | 'saving_order'      // Step 1: Save order to DB
-  | 'generating_proof'  // Step 2: Generate ZK proof
-  | 'approving'         // Step 3: Approve token
-  | 'settling'          // Step 4: On-chain settlement
-  | 'updating_order'    // Step 5: Update order in DB
+  | 'submitting_order'   // Step 1: Submit order with matching
+  | 'approving'          // Step 2: Approve token
+  | 'waiting_match'      // No match - order in book, waiting
+  | 'generating_proof'   // Step 3: Generate ZK proof (matched)
+  | 'settling'           // Step 4: On-chain settlement
+  | 'confirming'         // Step 5: Confirm settlement in DB
   | 'success'
   | 'error'
 
@@ -27,22 +34,56 @@ export default function TradeSidebar({ token }: { token: string }) {
   const [txHash, setTxHash] = React.useState<string>('')
   const [errorMsg, setErrorMsg] = React.useState('')
   const [savings, setSavings] = React.useState<number>(0)
+  const [matchInfo, setMatchInfo] = React.useState<MatchResult | null>(null)
 
   const { address, isConnected } = useAccount()
   const { data: ticker } = useBinanceBookTicker(token.toUpperCase())
-  const createOrder = useCreateOrder()
-  const updateOrder = useUpdateOrder()
+  const submitOrder = useSubmitOrder()
+  const confirmSettlement = useConfirmSettlement()
+  const unmatchOrders = useUnmatchOrders()
   const { settleTrade, approveToken, quoteTokenAddress, baseTokenAddress, isPending } = useDarkPool()
 
-  const isLoading = status !== 'idle' && status !== 'success' && status !== 'error'
+  // Track the current order ID for polling
+  const [currentOrderId, setCurrentOrderId] = React.useState<string | null>(null)
+
+  // Poll order status while waiting for counterparty match
+  React.useEffect(() => {
+    if (status !== 'waiting_match' || !currentOrderId) return
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/orders/${currentOrderId}`)
+        if (!res.ok) return
+        const order = await res.json()
+
+        if (order.status === 'filled') {
+          clearInterval(interval)
+          setTxHash(order.proof_hash || '')
+          setStatus('success')
+          setAmount('')
+          alert(
+            `Your ${side.toLowerCase()} order for ${order.size} ${token} has been filled by a counterparty!\n\n` +
+            (order.proof_hash ? `View tx: https://sepolia.arbiscan.io/tx/${order.proof_hash}` : '')
+          )
+        }
+      } catch {
+        // Silently ignore polling errors
+      }
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [status, currentOrderId, side, token])
+
+  const isLoading = status !== 'idle' && status !== 'success' && status !== 'error' && status !== 'waiting_match'
 
   const getStatusMessage = () => {
     switch (status) {
-      case 'saving_order': return '1/5 Saving order...'
+      case 'submitting_order': return '1/5 Submitting order...'
       case 'generating_proof': return '2/5 Generating ZK Proof...'
       case 'approving': return '3/5 Approving token...'
-      case 'settling': return '4/5 Settling on-chain...'
-      case 'updating_order': return '5/5 Updating order...'
+      case 'waiting_match': return 'Order placed! Waiting for counterparty...'
+      case 'settling': return matchInfo ? '4/5 Settling on-chain...' : 'Counterparty found! Settling...'
+      case 'confirming': return '5/5 Confirming settlement...'
       case 'success': return 'Trade completed!'
       case 'error': return errorMsg || 'Error occurred'
       default: return `${side} ${token}`
@@ -72,17 +113,21 @@ export default function TradeSidebar({ token }: { token: string }) {
     setErrorMsg('')
     setTxHash('')
     setSavings(0)
+    setMatchInfo(null)
+    setCurrentOrderId(null)
 
     let orderId: string | null = null
+    let matchResult: MatchResult | null = null
 
     try {
       // ============================================
-      // Step 1: Save order to database
+      // Step 1: Submit order with matching
+      // Backend will try to find a counterparty
       // ============================================
-      setStatus('saving_order')
-      const amountQuote = size * ticker.midpoint
+      setStatus('submitting_order')
+      const tickerSymbol = `${token.toUpperCase()}USDT`
 
-      const order = await createOrder.mutateAsync({
+      const result = await submitOrder.mutateAsync({
         user_address: address,
         side,
         asset: token.toUpperCase(),
@@ -91,119 +136,143 @@ export default function TradeSidebar({ token }: { token: string }) {
         price: ticker.midpoint.toString(),
       })
 
-      orderId = order.id
-      console.log('Order saved:', order)
+      orderId = result.order.id
+      setCurrentOrderId(orderId)
+      matchResult = result.matched ? (result.match ?? null) : null
+      setMatchInfo(matchResult)
+      console.log('Order submitted:', result)
 
       // ============================================
-      // Step 2: Generate ZK proof
+      // Step 2: Check match result and branch
       // ============================================
-      setStatus('generating_proof')
-      const tickerSymbol = `${token.toUpperCase()}USDT`
-      const proof = await generateProof(size, amountQuote, tickerSymbol)
-      console.log('ZK Proof generated:', proof)
+      if (matchResult) {
+        // ============================================
+        // MATCHED - Generate proof FIRST, then approve with exact amounts, then settle
+        // ============================================
+        const match = matchResult
+        const matchAmountQuote = match.matchSize * match.matchPrice
 
-      // Check if proof is valid
-      if (proof.publicInputs[0] === "0" || String(proof.publicInputs[0]) === "0") {
-        throw new Error('ZK proof computed valid=0. Trade check failed in circuit.')
-      }
+        console.log('Match found:', {
+          buyer: match.buyerAddress,
+          seller: match.sellerAddress,
+          price: match.matchPrice,
+          size: match.matchSize,
+          quoteAmount: matchAmountQuote,
+        })
 
-      // ============================================
-      // Step 3: Approve token
-      // BUY: User pays USDC to get base token
-      // SELL: User pays base token to get USDC
-      // ============================================
-      setStatus('approving')
+        // Step 2a: Generate ZK proof FIRST to get exact on-chain amounts
+        setStatus('generating_proof')
+        const proof = await generateProof(match.matchSize, matchAmountQuote, tickerSymbol)
+        console.log('ZK Proof generated:', proof)
 
-      if (side === 'BUY') {
-        // Buyer pays USDC
-        const quoteAmountWei = parseUnits(amountQuote.toFixed(6), 18)
-        if (quoteTokenAddress) {
-          console.log(`Approving ${amountQuote.toFixed(2)} USDC...`)
-          await approveToken(quoteTokenAddress as `0x${string}`, quoteAmountWei)
+        // Check if proof is valid
+        if (proof.publicInputs[0] === "0" || String(proof.publicInputs[0]) === "0") {
+          throw new Error('ZK proof computed valid=0. Trade check failed in circuit.')
         }
+
+        // Extract exact amounts from proof publicInputs (these are in wei)
+        // Circom output order: [valid, amountBase, amountQuote, midpointPrice, toleranceBps]
+        const proofAmountBaseWei = BigInt(proof.publicInputs[1])
+        const proofAmountQuoteWei = BigInt(proof.publicInputs[2])
+
+        console.log('Proof amounts (wei):', {
+          amountBase: proofAmountBaseWei.toString(),
+          amountQuote: proofAmountQuoteWei.toString(),
+        })
+
+        // Step 2b: Approve token using EXACT amounts from proof
+        setStatus('approving')
+
+        if (side === 'BUY' && quoteTokenAddress) {
+          console.log(`Approving quote token (USDC) as buyer, amount: ${proofAmountQuoteWei}`)
+          await approveToken(quoteTokenAddress as `0x${string}`, proofAmountQuoteWei)
+        } else if (side === 'SELL' && baseTokenAddress) {
+          console.log(`Approving base token (${token}) as seller, amount: ${proofAmountBaseWei}`)
+          await approveToken(baseTokenAddress as `0x${string}`, proofAmountBaseWei)
+        }
+
+        console.log('Token approved with exact proof amounts')
+
+        // Step 2c: Settle trade on-chain (amounts come from proof's publicInputs)
+        setStatus('settling')
+        const hash = await settleTrade({
+          proof,
+          buyer: match.buyerAddress as `0x${string}`,
+          seller: match.sellerAddress as `0x${string}`,
+        })
+
+        setTxHash(hash)
+        console.log('Trade settled on-chain:', hash)
+
+        // Step 2d: Confirm settlement in DB (updates both orders)
+        setStatus('confirming')
+        await confirmSettlement.mutateAsync({
+          orderId: orderId,
+          matchedOrderId: match.matchedOrderId,
+          txHash: hash,
+          filledSize: match.matchSize,
+        })
+        console.log('Settlement confirmed for both orders')
+
+        // ============================================
+        // Success!
+        // ============================================
+        const spreadSavings = match.matchSize * (ticker.spread / 2)
+        setSavings(spreadSavings)
+        setStatus('success')
+        setAmount('')
+
+        const explorerUrl = `https://sepolia.arbiscan.io/tx/${hash}`
+        const counterparty = side === 'BUY'
+          ? match.sellerAddress
+          : match.buyerAddress
+        const counterpartyShort = `${counterparty.slice(0, 6)}...${counterparty.slice(-4)}`
+
+        if (side === 'BUY') {
+          alert(
+            `Successfully bought ${match.matchSize} ${token}!\n\n` +
+            `Matched with seller: ${counterpartyShort}\n` +
+            `Paid: ${matchAmountQuote.toFixed(2)} USDC\n` +
+            `Received: ${match.matchSize} ${token}\n` +
+            `Price: $${match.matchPrice.toFixed(2)}\n` +
+            `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
+            `View tx: ${explorerUrl}`
+          )
+        } else {
+          alert(
+            `Successfully sold ${match.matchSize} ${token}!\n\n` +
+            `Matched with buyer: ${counterpartyShort}\n` +
+            `Sold: ${match.matchSize} ${token}\n` +
+            `Received: ${matchAmountQuote.toFixed(2)} USDC\n` +
+            `Price: $${match.matchPrice.toFixed(2)}\n` +
+            `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
+            `View tx: ${explorerUrl}`
+          )
+        }
+
       } else {
-        // Seller pays base token
-        const baseAmountWei = parseUnits(size.toString(), 18)
-        if (baseTokenAddress) {
-          console.log(`Approving ${size} ${token}...`)
+        // ============================================
+        // NO MATCH - Approve token with generous buffer, wait for counterparty
+        // When counterparty settles, their proof determines exact amounts.
+        // We add 10% buffer to handle midpoint price fluctuations.
+        // ============================================
+        setStatus('approving')
+
+        if (side === 'BUY' && quoteTokenAddress) {
+          const estimatedQuote = size * ticker.midpoint
+          const bufferedQuote = estimatedQuote * 1.1 // 10% buffer
+          const quoteAmountWei = parseUnits(bufferedQuote.toFixed(6), 18)
+          console.log(`No match - approving ${bufferedQuote.toFixed(2)} USDC (with 10% buffer) as buyer...`)
+          await approveToken(quoteTokenAddress as `0x${string}`, quoteAmountWei)
+        } else if (side === 'SELL' && baseTokenAddress) {
+          const baseAmountWei = parseUnits(size.toString(), 18)
+          console.log(`No match - approving ${size} ${token} (base token) as seller...`)
           await approveToken(baseTokenAddress as `0x${string}`, baseAmountWei)
         }
-      }
-      console.log('Token approved')
 
-      // ============================================
-      // Step 4: Settle trade on-chain
-      // For testing: user is both buyer and seller (self-trade)
-      // In production: would be matched with counterparty
-      // ============================================
-      setStatus('settling')
-
-      // Self-trade for testing
-      const buyer = address
-      const seller = address
-
-      console.log('Settling trade:', {
-        side,
-        buyer,
-        seller,
-        amountBase: size,
-        amountQuote: amountQuote.toFixed(2),
-      })
-
-      const hash = await settleTrade({
-        proof,
-        buyer,
-        seller,
-        amountBase: size.toString(),
-        amountQuote: amountQuote.toFixed(6),
-        ticker: tickerSymbol,
-      })
-
-      setTxHash(hash)
-      console.log('Trade settled:', hash)
-
-      // ============================================
-      // Step 5: Update order in database
-      // ============================================
-      setStatus('updating_order')
-      await updateOrder.mutateAsync({
-        orderId: orderId,
-        data: {
-          status: 'filled',
-          filled: size,
-          proof_hash: hash,
-        }
-      })
-      console.log('Order updated')
-
-      // ============================================
-      // Success!
-      // ============================================
-      const spreadSavings = size * (ticker.spread / 2)
-      setSavings(spreadSavings)
-      setStatus('success')
-      setAmount('')
-
-      const explorerUrl = `https://sepolia.arbiscan.io/tx/${hash}`
-
-      if (side === 'BUY') {
-        alert(
-          `Successfully bought ${size} ${token}!\n\n` +
-          `Paid: ${amountQuote.toFixed(2)} USDC\n` +
-          `Received: ${size} ${token}\n` +
-          `Price: $${ticker.midpoint.toFixed(2)}\n` +
-          `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
-          `View tx: ${explorerUrl}`
-        )
-      } else {
-        alert(
-          `Successfully sold ${size} ${token}!\n\n` +
-          `Sold: ${size} ${token}\n` +
-          `Received: ${amountQuote.toFixed(2)} USDC\n` +
-          `Price: $${ticker.midpoint.toFixed(2)}\n` +
-          `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
-          `View tx: ${explorerUrl}`
-        )
+        console.log('Token approved, waiting for counterparty')
+        setStatus('waiting_match')
+        console.log('No match found, order added to book:', orderId)
       }
 
     } catch (error) {
@@ -212,20 +281,31 @@ export default function TradeSidebar({ token }: { token: string }) {
       const message = error instanceof Error ? error.message : 'Failed to complete trade'
       setErrorMsg(message)
 
-      // Cancel order if it was created
-      if (orderId) {
+      // If we had a match and settlement failed, revert both orders to open
+      if (orderId && matchResult) {
         try {
-          await updateOrder.mutateAsync({
+          console.log('Reverting matched orders to open...')
+          await unmatchOrders.mutateAsync({
             orderId: orderId,
-            data: { status: 'cancelled' }
+            matchedOrderId: matchResult.matchedOrderId,
           })
-        } catch (updateError) {
-          console.error('Failed to cancel order:', updateError)
+          console.log('Orders reverted to open')
+        } catch (unmatchError) {
+          console.error('Failed to revert orders:', unmatchError)
         }
       }
 
       alert(message)
     }
+  }
+
+  const handleReset = () => {
+    setStatus('idle')
+    setErrorMsg('')
+    setTxHash('')
+    setSavings(0)
+    setMatchInfo(null)
+    setCurrentOrderId(null)
   }
 
   return (
@@ -240,21 +320,48 @@ export default function TradeSidebar({ token }: { token: string }) {
         onSubmit={handleSubmit}
         isLoading={isLoading || isPending}
         disabled={!isConnected}
-        statusMessage={isLoading ? getStatusMessage() : undefined}
+        statusMessage={(isLoading || status === 'waiting_match') ? getStatusMessage() : undefined}
       />
       <Info token={token} amount={amount} />
 
       {/* Status indicator */}
       {status !== 'idle' && (
-        <div className={`text-sm p-3 rounded space-y-1 ${status === 'success' ? 'bg-green-500/10 text-green-500' :
-            status === 'error' ? 'bg-red-500/10 text-red-500' :
-              'bg-blue-500/10 text-blue-500'
-          }`}>
+        <div className={`text-sm p-3 rounded space-y-1 ${
+          status === 'success' ? 'bg-green-500/10 text-green-500' :
+          status === 'error' ? 'bg-red-500/10 text-red-500' :
+          status === 'waiting_match' ? 'bg-yellow-500/10 text-yellow-500' :
+          'bg-blue-500/10 text-blue-500'
+        }`}>
           <p className="font-medium">{getStatusMessage()}</p>
+
+          {status === 'waiting_match' && (
+            <div className="space-y-2">
+              <p className="text-xs opacity-80">
+                Your {side.toLowerCase()} order has been placed and your{' '}
+                {side === 'BUY' ? 'USDC (quote)' : `${token} (base)`} token approved.
+                When a counterparty places a matching order, settlement will happen automatically.
+              </p>
+              <button
+                onClick={handleReset}
+                className="text-xs underline opacity-70 hover:opacity-100"
+              >
+                Place another order
+              </button>
+            </div>
+          )}
 
           {status === 'success' && savings > 0 && (
             <p className="text-xs">
               Spread savings: ${savings.toFixed(4)}
+            </p>
+          )}
+
+          {status === 'success' && matchInfo && (
+            <p className="text-xs opacity-80">
+              Matched with: {side === 'BUY'
+                ? `${matchInfo.sellerAddress.slice(0, 6)}...${matchInfo.sellerAddress.slice(-4)}`
+                : `${matchInfo.buyerAddress.slice(0, 6)}...${matchInfo.buyerAddress.slice(-4)}`
+              }
             </p>
           )}
 

@@ -7,7 +7,7 @@ import type { Order, CreateOrderRequest } from "@/types/order";
 // Fetch orders for current user
 async function fetchUserOrders(
   address: string,
-  status?: string
+  status?: string,
 ): Promise<Order[]> {
   const params = new URLSearchParams();
   if (status) params.append("status", status);
@@ -59,7 +59,7 @@ export interface SubmitOrderResponse {
 }
 
 async function submitOrder(
-  data: CreateOrderRequest
+  data: CreateOrderRequest,
 ): Promise<SubmitOrderResponse> {
   const res = await fetch(`${API_BASE_URL}/api/orders/submit`, {
     method: "POST",
@@ -74,7 +74,6 @@ async function submitOrder(
 
   return res.json();
 }
-
 // Confirm settlement after on-chain tx
 async function confirmSettlement(data: {
   orderId: string;
@@ -96,26 +95,6 @@ async function confirmSettlement(data: {
   return res.json();
 }
 
-// Fetch order book for an asset
-export interface OrderBookEntry {
-  id: string;
-  side: string;
-  size: string;
-  price: string;
-  created_at: string;
-}
-
-export interface OrderBook {
-  bids: OrderBookEntry[];
-  asks: OrderBookEntry[];
-}
-
-async function fetchOrderBook(asset: string): Promise<OrderBook> {
-  const res = await fetch(`${API_BASE_URL}/api/orderbook/${asset}`);
-  if (!res.ok) throw new Error("Failed to fetch order book");
-  return res.json();
-}
-
 // Cancel order
 async function cancelOrder(orderId: string): Promise<Order> {
   const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}`, {
@@ -133,14 +112,14 @@ async function cancelOrder(orderId: string): Promise<Order> {
 
 // Update order (status, filled, proof_hash)
 export interface UpdateOrderRequest {
-  status?: "open" | "filled" | "partial" | "cancelled";
+  status?: "open" | "filled" | "partial" | "cancelled" | "matching";
   filled?: number;
   proof_hash?: string;
 }
 
 async function updateOrder(
   orderId: string,
-  data: UpdateOrderRequest
+  data: UpdateOrderRequest,
 ): Promise<Order> {
   const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}`, {
     method: "PATCH",
@@ -160,7 +139,7 @@ async function updateOrder(
  * Hook to fetch user's orders
  */
 export function useOrders(
-  status?: "open" | "filled" | "partial" | "cancelled"
+  status?: "open" | "filled" | "partial" | "cancelled" | "matching",
 ) {
   const { address, isConnected } = useAccount();
 
@@ -236,7 +215,6 @@ export function useSubmitOrder() {
     mutationFn: submitOrder,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["orders", address] });
-      queryClient.invalidateQueries({ queryKey: ["orderbook"] });
     },
   });
 }
@@ -252,20 +230,40 @@ export function useConfirmSettlement() {
     mutationFn: confirmSettlement,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["orders", address] });
-      queryClient.invalidateQueries({ queryKey: ["orderbook"] });
     },
   });
 }
 
+// Revert matched orders back to open (when settlement fails)
+async function unmatchOrders(data: {
+  orderId: string;
+  matchedOrderId: string;
+}): Promise<{ message: string; orders: Order[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/orders/unmatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.error || "Failed to unmatch orders");
+  }
+
+  return res.json();
+}
+
 /**
- * Hook to fetch order book for an asset
+ * Hook to revert matched orders back to open (on settlement failure)
  */
-export function useOrderBook(asset: string) {
-  return useQuery({
-    queryKey: ["orderbook", asset],
-    queryFn: () => fetchOrderBook(asset),
-    enabled: !!asset,
-    staleTime: 5_000, // 5 seconds
-    refetchInterval: 10_000, // 10 seconds
+export function useUnmatchOrders() {
+  const queryClient = useQueryClient();
+  const { address } = useAccount();
+
+  return useMutation({
+    mutationFn: unmatchOrders,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orders", address] });
+    },
   });
 }

@@ -1,7 +1,7 @@
 export interface Order {
     id: string
     user_address: string
-    status: 'open' | 'filled' | 'partial' | 'cancelled'
+    status: 'open' | 'filled' | 'partial' | 'cancelled' | 'matching'
     side: 'BUY' | 'SELL'
     asset: string
     quote_asset: string

@@ -14,6 +14,8 @@ import { ArrowLeftRight } from '@hugeicons/core-free-icons'
 import Link from 'next/link'
 import { getAvailableTokens } from '@/constants/tokens'
 import { API_BASE_URL } from '@/constants/api'
+import { useAccount } from 'wagmi'
+import { arbitrumSepolia } from 'viem/chains'
 
 export default function Options({
     token,
@@ -24,7 +26,18 @@ export default function Options({
     side: 'BUY' | 'SELL'
     onSideChange: (side: 'BUY' | 'SELL') => void
 }) {
-    const availableTokens = getAvailableTokens()
+    const { chainId } = useAccount()
+    const allTokens = getAvailableTokens()
+    const availableTokens = React.useMemo(
+        () => {
+            // Di Arbitrum Sepolia, hanya tampilkan token ETH (base token) saja
+            if (chainId === arbitrumSepolia.id) {
+                return ['ETH']
+            }
+            return allTokens
+        },
+        [chainId, allTokens]
+    )
     const [tokenPrices, setTokenPrices] = React.useState<Record<string, number>>({})
     const [loading, setLoading] = React.useState(true)
 

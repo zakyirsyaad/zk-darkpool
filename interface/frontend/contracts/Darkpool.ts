@@ -1,5 +1,5 @@
 export const DARKPOOL_ADDRESS_TOKEN =
-  "0x11dB70F30532318089D5F17ef803750bcb980Abf";
+  "0x01b25b632E6c97817D47E600A5442aa828C1bca4";
 
 // Minimal ABI untuk demo (bisa ditambah sesuai kebutuhan)
 export const DARKPOOL_ADDRESS_ABI = [

@@ -3,8 +3,8 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
   useReadContract,
+  usePublicClient,
 } from "wagmi";
-import { parseUnits } from "viem";
 import {
   DARKPOOL_ADDRESS_TOKEN,
   DARKPOOL_ADDRESS_ABI,
@@ -43,9 +43,6 @@ export interface ProofResponse {
 }
 
 export interface SettleTradeParams {
-  amountBase: string; // Amount in token units (e.g., "0.1" for 0.1 ETH)
-  amountQuote: string; // Amount in quote units (e.g., "300" for 300 USDC)
-  ticker: string; // e.g., "ETHUSDT"
   buyer: `0x${string}`;
   seller: `0x${string}`;
 }
@@ -56,17 +53,36 @@ export interface SettleTradeParams {
 export async function generateProof(
   amountBase: number,
   amountQuote: number,
-  ticker: string
+  ticker: string,
 ): Promise<ProofResponse> {
-  const res = await fetch(`${API_BASE_URL}/match-and-settle`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ amountBase, amountQuote, ticker }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/match-and-settle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amountBase, amountQuote, ticker }),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "Failed to fetch" || msg.includes("fetch")) {
+      throw new Error(
+        "Cannot reach backend. Is the server running at " +
+          API_BASE_URL +
+          "? Check NEXT_PUBLIC_API_URL and try again.",
+      );
+    }
+    throw e;
+  }
 
   if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || "Failed to generate proof");
+    let errorMessage = "Failed to generate proof";
+    try {
+      const error = await res.json();
+      errorMessage = error.error || errorMessage;
+    } catch {
+      errorMessage = res.statusText || errorMessage;
+    }
+    throw new Error(errorMessage);
   }
 
   return res.json();
@@ -77,6 +93,7 @@ export async function generateProof(
  */
 export function useDarkPool() {
   const { writeContractAsync, isPending: isWritePending } = useWriteContract();
+  const publicClient = usePublicClient();
 
   // Read base and quote token addresses
   const { data: baseTokenAddress } = useReadContract({
@@ -92,36 +109,49 @@ export function useDarkPool() {
   });
 
   /**
+   * Wait for a transaction to be mined and check status
+   */
+  const waitForReceipt = async (hash: `0x${string}`, label: string) => {
+    if (!publicClient) throw new Error("Public client not available");
+
+    console.log(`Waiting for ${label} tx to be confirmed: ${hash}`);
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+    if (receipt.status === "reverted") {
+      throw new Error(`${label} transaction reverted on-chain. Tx: ${hash}`);
+    }
+
+    console.log(`${label} tx confirmed in block ${receipt.blockNumber}`);
+    return receipt;
+  };
+
+  /**
    * Approve token spending for DarkPool contract
+   * Waits for the approval tx to be confirmed on-chain
    */
   const approveToken = async (tokenAddress: `0x${string}`, amount: bigint) => {
-    return writeContractAsync({
+    const hash = await writeContractAsync({
       address: tokenAddress,
       abi: ERC20_ABI,
       functionName: "approve",
       args: [DARKPOOL_ADDRESS_TOKEN as `0x${string}`, amount],
     });
+
+    // Wait for approval to be mined before continuing
+    await waitForReceipt(hash, "Approve");
+    return hash;
   };
 
   /**
    * Settle trade on-chain with ZK proof
+   * Waits for the settlement tx to be confirmed on-chain
    */
   const settleTrade = async (
-    params: SettleTradeParams & { proof: ProofResponse }
+    params: SettleTradeParams & { proof: ProofResponse },
   ) => {
-    const { proof, buyer, seller, amountBase, amountQuote } = params;
-
-    console.log("settleTrade called with:", {
-      proof,
-      buyer,
-      seller,
-      amountBase,
-      amountQuote,
-    });
+    const { proof, buyer, seller } = params;
 
     try {
-      // Backend now uses snarkjs.groth16.exportSolidityCallData which returns
-      // values in the correct format for Ethereum (hex strings with proper G2 swapping)
       // a is [2] array
       const a: [bigint, bigint] = [BigInt(proof.a[0]), BigInt(proof.a[1])];
 
@@ -134,7 +164,9 @@ export function useDarkPool() {
       // c is [2] array
       const c: [bigint, bigint] = [BigInt(proof.c[0]), BigInt(proof.c[1])];
 
-      // publicInputs is [5] array
+      // publicInputs is [5] array (Circom output order):
+      // [0] = valid, [1] = amountBase (wei), [2] = amountQuote (wei),
+      // [3] = midpointPrice, [4] = toleranceBps
       const publicInputs: [bigint, bigint, bigint, bigint, bigint] = [
         BigInt(proof.publicInputs[0]),
         BigInt(proof.publicInputs[1]),
@@ -143,16 +175,17 @@ export function useDarkPool() {
         BigInt(proof.publicInputs[4]),
       ];
 
-      // Convert amounts to wei (18 decimals)
-      const amountBaseWei = parseUnits(amountBase, 18);
-      const amountQuoteWei = parseUnits(amountQuote, 18);
+      // Use amounts directly from the proof's publicInputs so they match exactly.
+      // publicInputs[1] = amountBase in wei, publicInputs[2] = amountQuote in wei
+      const amountBaseWei = publicInputs[1];
+      const amountQuoteWei = publicInputs[2];
 
       console.log("Calling settleTrade with args:", {
         a: a.map((x) => x.toString()),
         b: b.map((row) => row.map((x) => x.toString())),
         c: c.map((x) => x.toString()),
         publicInputs: publicInputs.map((x) => x.toString()),
-        publicInputsValid: publicInputs[0].toString(), // Should be "1" for valid
+        publicInputsValid: publicInputs[0].toString(),
         buyer,
         seller,
         amountBaseWei: amountBaseWei.toString(),
@@ -162,7 +195,7 @@ export function useDarkPool() {
 
       console.log("Sending transaction to MetaMask...");
 
-      const result = await writeContractAsync({
+      const hash = await writeContractAsync({
         address: DARKPOOL_ADDRESS_TOKEN as `0x${string}`,
         abi: DARKPOOL_ADDRESS_ABI,
         functionName: "settleTrade",
@@ -178,8 +211,11 @@ export function useDarkPool() {
         ],
       });
 
-      console.log("settleTrade result:", result);
-      return result;
+      // Wait for settlement to be confirmed on-chain
+      await waitForReceipt(hash, "SettleTrade");
+
+      console.log("settleTrade confirmed:", hash);
+      return hash;
     } catch (error) {
       console.error("settleTrade error:", error);
       throw error;

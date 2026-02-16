@@ -33,11 +33,12 @@ function formatNumber(num: number, decimals = 2) {
 function StatusBadge({ status }: { status: string }) {
     const colors: Record<string, string> = {
         open: 'text-blue-500 bg-blue-500/10',
+        matching: 'text-orange-500 bg-orange-500/10',
         filled: 'text-green-500 bg-green-500/10',
         partial: 'text-yellow-500 bg-yellow-500/10',
         cancelled: 'text-gray-500 bg-gray-500/10',
     }
-    
+
     return (
         <span className={`px-2 py-1 rounded text-xs font-semibold capitalize ${colors[status] || ''}`}>
             {status}
@@ -91,8 +92,8 @@ export default function Orders() {
     return (
         <Table>
             <TableCaption>
-                {orders?.length === 0 
-                    ? 'No orders yet. Place your first order!' 
+                {orders?.length === 0
+                    ? 'No orders yet. Place your first order!'
                     : `Showing ${orders?.length} order(s)`
                 }
             </TableCaption>
@@ -151,8 +152,8 @@ export default function Orders() {
                         </TableCell>
                         <TableCell>
                             {order.status === 'open' && (
-                                <Button 
-                                    variant="ghost" 
+                                <Button
+                                    variant="ghost"
                                     size="sm"
                                     className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
                                     onClick={() => handleCancel(order.id)}

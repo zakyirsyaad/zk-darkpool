@@ -76,29 +76,54 @@ app.post("/match-and-settle", async (req, res) => {
     // 1. Query midpoint real-time (try Binance, CoinGecko, then fallback)
     let midpoint;
 
+    const token = ticker.replace("USDT", "");
+
+    // Try Binance first
     try {
       const binanceRes = await axios.get(
         `https://api.binance.com/api/v3/ticker/bookTicker?symbol=${ticker}`,
-        { httpsAgent, timeout: 5000 }
+        { httpsAgent, timeout: 5000 },
       );
-      midpoint =
-        (parseFloat(binanceRes.data.bidPrice) +
-          parseFloat(binanceRes.data.askPrice)) /
-        2;
-      console.log("Using Binance price:", midpoint);
+      if (
+        binanceRes.data &&
+        binanceRes.data.bidPrice &&
+        binanceRes.data.askPrice
+      ) {
+        midpoint =
+          (parseFloat(binanceRes.data.bidPrice) +
+            parseFloat(binanceRes.data.askPrice)) /
+          2;
+        if (!isNaN(midpoint) && midpoint > 0) {
+          console.log("Using Binance price:", midpoint);
+        } else {
+          throw new Error("Invalid Binance price");
+        }
+      } else {
+        throw new Error("Invalid Binance response");
+      }
     } catch (binanceError) {
+      // Try CoinGecko
       try {
         const bookTicker = await fetchBookTickerFromCoinGecko(ticker);
         midpoint =
           (parseFloat(bookTicker.bidPrice) + parseFloat(bookTicker.askPrice)) /
           2;
-        console.log("Using CoinGecko price:", midpoint);
+        if (!isNaN(midpoint) && midpoint > 0) {
+          console.log("Using CoinGecko price:", midpoint);
+        } else {
+          throw new Error("Invalid CoinGecko price");
+        }
       } catch (geckoError) {
         // Use fallback price
-        const token = ticker.replace("USDT", "");
         midpoint = FALLBACK_PRICES[token] || 100;
-        console.log("Using fallback price:", midpoint);
+        console.log("Using fallback price for", token, ":", midpoint);
       }
+    }
+
+    // Final validation
+    if (isNaN(midpoint) || midpoint <= 0) {
+      midpoint = FALLBACK_PRICES[token] || 100;
+      console.log("Forced fallback price for", token, ":", midpoint);
     }
 
     // 2. Generate input.json
@@ -173,10 +198,10 @@ app.post("/match-and-settle", async (req, res) => {
 
     // 3. Generate witness & proof
     await execPromise(
-      "node ../build/trade_check_js/generate_witness.js ../build/trade_check_js/trade_check.wasm input.json witness.wtns"
+      "node ../build/trade_check_js/generate_witness.js ../build/trade_check_js/trade_check.wasm input.json witness.wtns",
     );
     await execPromise(
-      "npx snarkjs groth16 prove ../build/circuit_final.zkey witness.wtns proof.json public.json"
+      "npx snarkjs groth16 prove ../build/circuit_final.zkey witness.wtns proof.json public.json",
     );
 
     // 4. Baca proof & public
@@ -184,12 +209,14 @@ app.post("/match-and-settle", async (req, res) => {
     const publicInputs = JSON.parse(await fs.readFile("public.json", "utf8"));
 
     // Log public inputs to verify circuit output
+    // Circom output order: outputs first (valid), then public inputs in declaration order
+    // Template declares: amountBase, amountQuote, midpointPrice, toleranceBps
     console.log("Circuit public outputs:", {
       valid: publicInputs[0],
-      midpointPrice: publicInputs[1],
-      toleranceBps: publicInputs[2],
-      amountBase: publicInputs[3],
-      amountQuote: publicInputs[4],
+      amountBase: publicInputs[1],
+      amountQuote: publicInputs[2],
+      midpointPrice: publicInputs[3],
+      toleranceBps: publicInputs[4],
     });
 
     // Check if circuit computed valid=1
@@ -199,11 +226,11 @@ app.post("/match-and-settle", async (req, res) => {
       console.error("--- Debugging checks ---");
       console.error(
         "  saldoBase >= amountBase?",
-        BigInt(input.saldoBase) >= BigInt(input.amountBase)
+        BigInt(input.saldoBase) >= BigInt(input.amountBase),
       );
       console.error(
         "  saldoQuote >= amountQuote?",
-        BigInt(input.saldoQuote) >= BigInt(input.amountQuote)
+        BigInt(input.saldoQuote) >= BigInt(input.amountQuote),
       );
 
       const expQ = BigInt(input.amountBase) * BigInt(input.midpointPrice);
@@ -231,7 +258,7 @@ app.post("/match-and-settle", async (req, res) => {
     // This handles the G2 point coordinate swapping automatically
     const calldata = await snarkjs.groth16.exportSolidityCallData(
       proof,
-      publicInputs
+      publicInputs,
     );
 
     // Parse the calldata - it's a comma-separated string of arrays
@@ -274,7 +301,7 @@ app.get("/api/my-tokens", async (req, res) => {
 
     // Fetch ke DexScreener
     const response = await axios.get(
-      `https://api.dexscreener.com/latest/dex/tokens/${addresses}`
+      `https://api.dexscreener.com/latest/dex/tokens/${addresses}`,
     );
     const pairs = response.data.pairs || [];
 
@@ -282,7 +309,8 @@ app.get("/api/my-tokens", async (req, res) => {
     const result = MY_WALLET_TOKENS.map((token) => {
       // Cari data yang match dengan address
       const marketData = pairs.find(
-        (p) => p.baseToken.address.toLowerCase() === token.address.toLowerCase()
+        (p) =>
+          p.baseToken.address.toLowerCase() === token.address.toLowerCase(),
       );
 
       return {
@@ -443,7 +471,7 @@ app.get("/api/binance/prices", async (req, res) => {
     try {
       const url = symbols
         ? `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(
-            symbols
+            symbols,
           )}`
         : `https://api.binance.com/api/v3/ticker/price`;
 
@@ -537,6 +565,24 @@ app.get("/api/binance/bookTicker", async (req, res) => {
 // =============================================
 // Orders CRUD Endpoints
 // =============================================
+
+// POST: Cancel all open orders (useful to clean up stale test orders)
+app.post("/api/orders/cancel-all-open", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("orders")
+      .update({ status: "cancelled" })
+      .eq("status", "open")
+      .select();
+
+    if (error) throw error;
+
+    console.log(`Cancelled ${data?.length || 0} open orders`);
+    res.json({ message: `Cancelled ${data?.length || 0} open orders`, count: data?.length || 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET all orders (with optional filters)
 app.get("/api/orders", async (req, res) => {
@@ -711,63 +757,52 @@ app.get("/api/users/:address/orders", async (req, res) => {
 // =============================================
 
 /**
- * Find matching order for a given order
- * BUY order matches with SELL order (and vice versa) for same asset
- * Price tolerance: buyer's price >= seller's price
+ * Find a matching order (no locking - status stays "open").
+ *
+ * Dark pool matching: orders match on asset + opposite side only (FIFO).
+ * The actual settlement price is the real-time Binance midpoint fetched
+ * at proof-generation time, so stored order prices are informational only.
+ *
+ * Orders go directly from "open" → "filled" when settlement is confirmed.
+ * No intermediate "matching" status needed (avoids DB check_status constraint).
  */
-async function findMatchingOrder(order) {
+async function findMatch(order) {
   const oppositeSide = order.side === "BUY" ? "SELL" : "BUY";
 
-  // Find open orders on opposite side for same asset
-  let query = supabase
+  const { data: candidates, error } = await supabase
     .from("orders")
     .select("*")
     .eq("status", "open")
     .eq("asset", order.asset)
     .eq("side", oppositeSide)
-    .neq("user_address", order.user_address.toLowerCase()) // Don't match with self
+    .neq("user_address", order.user_address.toLowerCase())
     .order("created_at", { ascending: true }); // FIFO matching
 
-  const { data: candidates, error } = await query;
-
   if (error) throw error;
-  if (!candidates || candidates.length === 0) return null;
-
-  // Find best match based on price
-  // For BUY order: find SELL order where seller_price <= buyer_price
-  // For SELL order: find BUY order where buyer_price >= seller_price
-  for (const candidate of candidates) {
-    const buyerPrice =
-      order.side === "BUY"
-        ? parseFloat(order.price)
-        : parseFloat(candidate.price);
-    const sellerPrice =
-      order.side === "SELL"
-        ? parseFloat(order.price)
-        : parseFloat(candidate.price);
-
-    // Match if buyer willing to pay >= seller asking price
-    if (buyerPrice >= sellerPrice) {
-      // Use midpoint price for fair settlement
-      const matchPrice = (buyerPrice + sellerPrice) / 2;
-
-      // Match the smaller of the two sizes
-      const matchSize = Math.min(
-        parseFloat(order.size),
-        parseFloat(candidate.size)
-      );
-
-      return {
-        matchedOrder: candidate,
-        matchPrice,
-        matchSize,
-        buyer: order.side === "BUY" ? order : candidate,
-        seller: order.side === "SELL" ? order : candidate,
-      };
-    }
+  if (!candidates || candidates.length === 0) {
+    console.log("No open opposite-side orders found for", order.asset);
+    return null;
   }
 
-  return null;
+  // Take the first (oldest) matching order
+  const candidate = candidates[0];
+
+  console.log(`Match found: ${candidate.id.slice(0, 8)} (${candidate.side} ${candidate.size} ${candidate.asset})`);
+
+  const matchPrice =
+    (parseFloat(order.price) + parseFloat(candidate.price)) / 2;
+  const matchSize = Math.min(
+    parseFloat(order.size),
+    parseFloat(candidate.size),
+  );
+
+  return {
+    matchedOrder: candidate,
+    matchPrice,
+    matchSize,
+    buyer: order.side === "BUY" ? order : candidate,
+    seller: order.side === "SELL" ? order : candidate,
+  };
 }
 
 // POST: Submit order and try to match
@@ -814,11 +849,13 @@ app.post("/api/orders/submit", async (req, res) => {
 
     console.log("New order created:", newOrder);
 
-    // Try to find a match
-    const match = await findMatchingOrder(newOrder);
+    // Try to find a match (no status change - orders stay "open")
+    const match = await findMatch(newOrder);
 
     if (match) {
       console.log("Match found!", {
+        newOrder: newOrder.id.slice(0, 8),
+        matchedWith: match.matchedOrder.id.slice(0, 8),
         buyer: match.buyer.user_address,
         seller: match.seller.user_address,
         price: match.matchPrice,
@@ -826,6 +863,7 @@ app.post("/api/orders/submit", async (req, res) => {
       });
 
       // Return match info for frontend to execute settlement
+      // Orders stay "open" until settlement is confirmed on-chain
       res.json({
         order: newOrder,
         matched: true,
@@ -858,7 +896,7 @@ app.post("/api/orders/settle", async (req, res) => {
   try {
     const { orderId, matchedOrderId, txHash, filledSize } = req.body;
 
-    // Update both orders to filled
+    // Update both orders from "open" to "filled"
     const updates = {
       status: "filled",
       filled: filledSize,
@@ -870,18 +908,22 @@ app.post("/api/orders/settle", async (req, res) => {
         .from("orders")
         .update(updates)
         .eq("id", orderId)
+        .eq("status", "open")
         .select()
         .single(),
       supabase
         .from("orders")
         .update(updates)
         .eq("id", matchedOrderId)
+        .eq("status", "open")
         .select()
         .single(),
     ]);
 
     if (result1.error) throw result1.error;
     if (result2.error) throw result2.error;
+
+    console.log("Both orders settled:", orderId.slice(0, 8), matchedOrderId.slice(0, 8));
 
     res.json({
       message: "Both orders settled",
@@ -893,56 +935,67 @@ app.post("/api/orders/settle", async (req, res) => {
   }
 });
 
-// GET: Order book from Binance
+// POST: Revert matched orders (kept for compatibility, but now a no-op since
+// orders stay "open" until settlement. Just returns success.)
+app.post("/api/orders/unmatch", async (req, res) => {
+  try {
+    const { orderId, matchedOrderId } = req.body;
+    console.log("Unmatch requested (no-op, orders already open):", orderId?.slice(0, 8), matchedOrderId?.slice(0, 8));
+    res.json({ message: "Orders are already open", orders: [] });
+  } catch (error) {
+    console.error("Unmatch error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET: Order book from Binance (with fallback)
 app.get("/api/orderbook/:asset", async (req, res) => {
   try {
     const { asset } = req.params;
     const symbol = `${asset.toUpperCase()}USDT`;
-    const limit = req.query.limit || 10;
+    const limit = parseInt(req.query.limit) || 10;
+    const token = asset.toUpperCase();
 
     // Try Binance first
     try {
       const response = await axios.get(
         `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=${limit}`,
-        { httpsAgent, timeout: 5000 }
+        { httpsAgent, timeout: 5000 },
       );
 
-      // Format: bids and asks are arrays of [price, quantity]
-      const bids = response.data.bids.map(([price, size]) => ({
-        price,
-        size,
-        total: (parseFloat(price) * parseFloat(size)).toFixed(2),
-      }));
+      if (response.data && response.data.bids && response.data.asks) {
+        const bids = response.data.bids.map(([price, size]) => ({
+          price,
+          size,
+          total: (parseFloat(price) * parseFloat(size)).toFixed(2),
+        }));
 
-      const asks = response.data.asks.map(([price, size]) => ({
-        price,
-        size,
-        total: (parseFloat(price) * parseFloat(size)).toFixed(2),
-      }));
+        const asks = response.data.asks.map(([price, size]) => ({
+          price,
+          size,
+          total: (parseFloat(price) * parseFloat(size)).toFixed(2),
+        }));
 
-      res.json({
-        bids,
-        asks,
-        source: "binance",
-        symbol,
-        lastUpdateId: response.data.lastUpdateId,
-      });
-      return;
+        return res.json({
+          bids,
+          asks,
+          source: "binance",
+          symbol,
+        });
+      }
     } catch (binanceError) {
-      console.error("Binance depth error:", binanceError.message);
+      // Silent fail, use fallback
     }
 
-    // Fallback: generate mock order book based on fallback price
-    const token = asset.toUpperCase();
+    // Fallback: generate order book based on fallback price
     const basePrice = FALLBACK_PRICES[token] || 100;
-
     const bids = [];
     const asks = [];
 
-    for (let i = 0; i < 10; i++) {
-      const bidPrice = basePrice * (1 - (i + 1) * 0.0005);
-      const askPrice = basePrice * (1 + (i + 1) * 0.0005);
-      const size = (Math.random() * 2 + 0.01).toFixed(4);
+    for (let i = 0; i < limit; i++) {
+      const bidPrice = basePrice * (1 - (i + 1) * 0.0003);
+      const askPrice = basePrice * (1 + (i + 1) * 0.0003);
+      const size = (Math.random() * 1 + 0.01).toFixed(4);
 
       bids.push({
         price: bidPrice.toFixed(2),
@@ -962,6 +1015,7 @@ app.get("/api/orderbook/:asset", async (req, res) => {
       asks,
       source: "fallback",
       symbol,
+      basePrice,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
