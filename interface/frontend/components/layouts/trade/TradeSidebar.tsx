@@ -11,6 +11,7 @@ import {
   type MatchResult,
 } from '@/hooks/useOrders'
 import { useBinanceBookTicker } from '@/hooks/useBinanceBookTicker'
+import { useTokenBalance } from '@/hooks/useTokenBalance'
 import { useAccount } from 'wagmi'
 import { useDarkPool, generateProof } from '@/hooks/useDarkPool'
 import { parseUnits } from 'viem'
@@ -42,6 +43,10 @@ export default function TradeSidebar({ token }: { token: string }) {
   const confirmSettlement = useConfirmSettlement()
   const unmatchOrders = useUnmatchOrders()
   const { settleTrade, approveToken, quoteTokenAddress, baseTokenAddress, isPending } = useDarkPool()
+
+  // Token balances for insufficient balance check
+  const baseBalance = useTokenBalance(token)
+  const quoteBalance = useTokenBalance('USDC')
 
   // Track the current order ID for polling
   const [currentOrderId, setCurrentOrderId] = React.useState<string | null>(null)
@@ -75,6 +80,24 @@ export default function TradeSidebar({ token }: { token: string }) {
   }, [status, currentOrderId, side, token])
 
   const isLoading = status !== 'idle' && status !== 'success' && status !== 'error' && status !== 'waiting_match'
+  const isOrderActive = status === 'waiting_match' || status === 'success'
+
+  // Insufficient balance check
+  const insufficientBalance = React.useMemo(() => {
+    const size = parseFloat(amount)
+    if (!size || size <= 0) return false
+
+    if (side === 'BUY') {
+      // Buyer needs enough USDC (quote token)
+      const neededQuote = ticker?.midpoint ? size * ticker.midpoint : 0
+      const availableQuote = parseFloat(quoteBalance.balance)
+      return neededQuote > 0 && availableQuote < neededQuote
+    } else {
+      // Seller needs enough base token
+      const availableBase = parseFloat(baseBalance.balance)
+      return availableBase < size
+    }
+  }, [amount, side, ticker?.midpoint, baseBalance.balance, quoteBalance.balance])
 
   const getStatusMessage = () => {
     switch (status) {
@@ -86,8 +109,16 @@ export default function TradeSidebar({ token }: { token: string }) {
       case 'confirming': return '5/5 Confirming settlement...'
       case 'success': return 'Trade completed!'
       case 'error': return errorMsg || 'Error occurred'
-      default: return `${side} ${token}`
+      default: return ''
     }
+  }
+
+  const getButtonLabel = () => {
+    if (insufficientBalance) return 'Insufficient Balance'
+    if (status === 'waiting_match') return 'Order Placed'
+    if (status === 'success') return 'Trade Completed'
+    if (isLoading) return getStatusMessage()
+    return `${side} ${token}`
   }
 
   const handleSubmit = async () => {
@@ -272,6 +303,7 @@ export default function TradeSidebar({ token }: { token: string }) {
 
         console.log('Token approved, waiting for counterparty')
         setStatus('waiting_match')
+        setAmount('')
         console.log('No match found, order added to book:', orderId)
       }
 
@@ -319,8 +351,9 @@ export default function TradeSidebar({ token }: { token: string }) {
         side={side}
         onSubmit={handleSubmit}
         isLoading={isLoading || isPending}
-        disabled={!isConnected}
-        statusMessage={(isLoading || status === 'waiting_match') ? getStatusMessage() : undefined}
+        disabled={!isConnected || insufficientBalance || isOrderActive}
+        buttonLabel={getButtonLabel()}
+        insufficientBalance={insufficientBalance}
       />
       <Info token={token} amount={amount} />
 

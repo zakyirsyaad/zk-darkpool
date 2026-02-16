@@ -73,8 +73,8 @@ export default function Chart({ symbol = 'BTC', exchange = 'BINANCE' }: ChartPro
                     enable_publishing: false,
                     allow_symbol_change: true,
                     container_id: widgetId,
-                    height: '100%',
-                    width: '100%',
+                    // height: '100%',
+                    // width: '100%',
                 })
             } catch (error) {
                 console.error('Error initializing TradingView widget:', error)
@@ -125,12 +125,13 @@ export default function Chart({ symbol = 'BTC', exchange = 'BINANCE' }: ChartPro
     return (
         <div
             ref={chartWrapperRef}
-            className="relative w-full h-full border"
+            className="relative border"
         >
             <div
                 id={widgetId}
                 ref={containerRef}
-                className="w-full h-full"
+                // className="w-full h-full"
+                className='w-full h-96'
             />
             <Button
                 onClick={toggleFullscreen}

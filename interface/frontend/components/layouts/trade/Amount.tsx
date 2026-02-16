@@ -11,7 +11,8 @@ export default function Amount({
     onSubmit,
     isLoading,
     disabled,
-    statusMessage,
+    buttonLabel,
+    insufficientBalance,
 }: {
     token: string
     amount: string
@@ -20,8 +21,13 @@ export default function Amount({
     onSubmit: () => void
     isLoading?: boolean
     disabled?: boolean
-    statusMessage?: string
+    buttonLabel?: string
+    insufficientBalance?: boolean
 }) {
+    const buttonClass = insufficientBalance
+        ? 'w-full font-bold bg-zinc-600 hover:bg-zinc-600 cursor-not-allowed opacity-70'
+        : `w-full font-bold ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`
+
     return (
         <div className='space-y-1'>
             <Label>Amount</Label>
@@ -30,15 +36,15 @@ export default function Amount({
                 value={amount}
                 inputMode="decimal"
                 onChange={(e) => onAmountChange(e.target.value)}
-                disabled={isLoading}
+                disabled={isLoading || disabled}
             />
             <Button
-                className={`w-full font-bold ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`}
+                className={buttonClass}
                 size={"lg"}
                 onClick={onSubmit}
-                disabled={isLoading || disabled}
+                disabled={isLoading || disabled || insufficientBalance}
             >
-                {statusMessage || `${side} ${token}`}
+                {buttonLabel || `${side} ${token}`}
             </Button>
         </div>
     )
