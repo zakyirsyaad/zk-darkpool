@@ -21,7 +21,7 @@ function DesktopHeader() {
       <nav><Link href="/" className={`text-2xl font-bold ${isHome ? "cursor-none" : ""}`}>DARX</Link></nav>
       <ol className="flex justify-center gap-10">
         <li className="hover:font-black duration-300 "><Link href={"/trade/ETH"} className={isHome ? "cursor-none" : ""}>Trade</Link></li>
-        <li className="hover:font-black duration-300 "><Link href={"/"} className={isHome ? "cursor-none" : ""}>Orders</Link></li>
+        <li className="hover:font-black duration-300 "><Link href={"/orders"} className={isHome ? "cursor-none" : ""}>Orders</Link></li>
         <li className="hover:font-black duration-300 "><Link href={"/"} className={isHome ? "cursor-none" : ""}>Docs</Link></li>
       </ol>
       <div className="flex justify-end items-center">

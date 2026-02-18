@@ -16,6 +16,16 @@ import { useAccount } from 'wagmi'
 import { useDarkPool, generateProof } from '@/hooks/useDarkPool'
 import { parseUnits } from 'viem'
 import { API_BASE_URL } from '@/constants/api'
+import { Alert, AlertTitle, AlertDescription, AlertAction } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { CircleCheck, CircleAlert, X } from 'lucide-react'
+
+type AlertInfo = {
+  variant: 'default' | 'destructive'
+  title: string
+  description: string
+  txHash?: string
+} | null
 
 type TradeStatus =
   | 'idle'
@@ -37,6 +47,11 @@ export default function TradeSidebar({ token }: { token: string }) {
   const [errorMsg, setErrorMsg] = React.useState('')
   const [savings, setSavings] = React.useState<number>(0)
   const [matchInfo, setMatchInfo] = React.useState<MatchResult | null>(null)
+  const [alertInfo, setAlertInfo] = React.useState<AlertInfo>(null)
+
+  const showAlert = (variant: 'default' | 'destructive', title: string, description: string, txHash?: string) => {
+    setAlertInfo({ variant, title, description, txHash })
+  }
 
   const { address, isConnected } = useAccount()
   const { data: ticker } = useBinanceBookTicker(token.toUpperCase())
@@ -75,7 +90,7 @@ export default function TradeSidebar({ token }: { token: string }) {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/orders/${currentOrderId}`)
+        const res = await fetch(`${API_BASE_URL}/api/orders/${currentOrderId}?user_address=${address}`)
         if (!res.ok) return
         const order = await res.json()
 
@@ -84,9 +99,11 @@ export default function TradeSidebar({ token }: { token: string }) {
           setTxHash(order.proof_hash || '')
           setStatus('success')
           setAmount('')
-          alert(
-            `Your ${side.toLowerCase()} order for ${order.size} ${token} has been filled by a counterparty!\n\n` +
-            (order.proof_hash ? `View tx: https://sepolia.arbiscan.io/tx/${order.proof_hash}` : '')
+          showAlert(
+            'default',
+            'Order Filled!',
+            `Your ${side.toLowerCase()} order for ${order.size} ${token} has been filled by a counterparty.`,
+            order.proof_hash
           )
         }
       } catch {
@@ -95,7 +112,7 @@ export default function TradeSidebar({ token }: { token: string }) {
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [status, currentOrderId, side, token])
+  }, [status, currentOrderId, side, token, address])
 
   const isLoading = status !== 'idle' && status !== 'success' && status !== 'error' && status !== 'waiting_match'
   const isOrderActive = status === 'waiting_match' || status === 'success'
@@ -138,17 +155,17 @@ export default function TradeSidebar({ token }: { token: string }) {
   const handleSubmit = async () => {
     // Validation
     if (!isConnected || !address) {
-      alert('Please connect your wallet first')
+      showAlert('destructive', 'Wallet Required', 'Please connect your wallet first.')
       return
     }
 
     if (!tokenSize || tokenSize <= 0) {
-      alert('Please enter a valid amount')
+      showAlert('destructive', 'Invalid Amount', 'Please enter a valid amount.')
       return
     }
 
     if (!ticker?.midpoint || !ticker?.spread) {
-      alert('Price not available, please try again')
+      showAlert('destructive', 'Price Unavailable', 'Price not available, please try again.')
       return
     }
 
@@ -159,6 +176,7 @@ export default function TradeSidebar({ token }: { token: string }) {
     setSavings(0)
     setMatchInfo(null)
     setCurrentOrderId(null)
+    setAlertInfo(null)
 
     let orderId: string | null = null
     let matchResult: MatchResult | null = null
@@ -266,31 +284,24 @@ export default function TradeSidebar({ token }: { token: string }) {
         setStatus('success')
         setAmount('')
 
-        const explorerUrl = `https://sepolia.arbiscan.io/tx/${hash}`
         const counterparty = side === 'BUY'
           ? match.sellerAddress
           : match.buyerAddress
         const counterpartyShort = `${counterparty.slice(0, 6)}...${counterparty.slice(-4)}`
 
         if (side === 'BUY') {
-          alert(
-            `Successfully bought ${match.matchSize} ${token}!\n\n` +
-            `Matched with seller: ${counterpartyShort}\n` +
-            `Paid: ${matchAmountQuote.toFixed(2)} USDC\n` +
-            `Received: ${match.matchSize} ${token}\n` +
-            `Price: $${match.matchPrice.toFixed(2)}\n` +
-            `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
-            `View tx: ${explorerUrl}`
+          showAlert(
+            'default',
+            `Bought ${match.matchSize} ${token}`,
+            `Matched with ${counterpartyShort} · Paid ${matchAmountQuote.toFixed(2)} USDC · Price $${match.matchPrice.toFixed(2)} · Saved $${spreadSavings.toFixed(4)}`,
+            hash
           )
         } else {
-          alert(
-            `Successfully sold ${match.matchSize} ${token}!\n\n` +
-            `Matched with buyer: ${counterpartyShort}\n` +
-            `Sold: ${match.matchSize} ${token}\n` +
-            `Received: ${matchAmountQuote.toFixed(2)} USDC\n` +
-            `Price: $${match.matchPrice.toFixed(2)}\n` +
-            `Spread savings: $${spreadSavings.toFixed(4)}\n\n` +
-            `View tx: ${explorerUrl}`
+          showAlert(
+            'default',
+            `Sold ${match.matchSize} ${token}`,
+            `Matched with ${counterpartyShort} · Received ${matchAmountQuote.toFixed(2)} USDC · Price $${match.matchPrice.toFixed(2)} · Saved $${spreadSavings.toFixed(4)}`,
+            hash
           )
         }
 
@@ -340,7 +351,7 @@ export default function TradeSidebar({ token }: { token: string }) {
         }
       }
 
-      alert(message)
+      showAlert('destructive', 'Trade Failed', message)
     }
   }
 
@@ -351,6 +362,7 @@ export default function TradeSidebar({ token }: { token: string }) {
     setSavings(0)
     setMatchInfo(null)
     setCurrentOrderId(null)
+    setAlertInfo(null)
   }
 
   return (
@@ -376,9 +388,9 @@ export default function TradeSidebar({ token }: { token: string }) {
       {/* Status indicator */}
       {status !== 'idle' && (
         <div className={`text-sm p-3 rounded space-y-1 ${status === 'success' ? 'bg-green-500/10 text-green-500' :
-            status === 'error' ? 'bg-red-500/10 text-red-500' :
-              status === 'waiting_match' ? 'bg-yellow-500/10 text-yellow-500' :
-                'bg-blue-500/10 text-blue-500'
+          status === 'error' ? 'bg-red-500/10 text-red-500' :
+            status === 'waiting_match' ? 'bg-yellow-500/10 text-yellow-500' :
+              'bg-blue-500/10 text-blue-500'
           }`}>
           <p className="font-medium">{getStatusMessage()}</p>
 
@@ -424,6 +436,31 @@ export default function TradeSidebar({ token }: { token: string }) {
             </a>
           )}
         </div>
+      )}
+
+      {alertInfo && (
+        <Alert variant={alertInfo.variant} className="animate-in fade-in slide-in-from-top-1 duration-300">
+          {alertInfo.variant === 'destructive' ? <CircleAlert className="size-4" /> : <CircleCheck className="size-4" />}
+          <AlertTitle>{alertInfo.title}</AlertTitle>
+          <AlertDescription>
+            {alertInfo.description}
+            {alertInfo.txHash && (
+              <a
+                href={`https://sepolia.arbiscan.io/tx/${alertInfo.txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block mt-1 underline"
+              >
+                View on Arbiscan
+              </a>
+            )}
+          </AlertDescription>
+          <AlertAction>
+            <Button variant="ghost" size="icon" className="size-6" onClick={() => setAlertInfo(null)}>
+              <X className="size-3" />
+            </Button>
+          </AlertAction>
+        </Alert>
       )}
 
       <p className='text-xs text-muted-foreground'>

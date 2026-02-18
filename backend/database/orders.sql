@@ -3,24 +3,24 @@
 -- =============================================
 
 -- 1. Create orders table
+-- NOTE: side, size, price, order_value, filled are stored as encrypted TEXT
+-- (AES-256-GCM via backend relayer). Only the backend can decrypt for matching.
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_address VARCHAR(42) NOT NULL,              -- Ethereum wallet address
     status VARCHAR(20) NOT NULL DEFAULT 'open',     -- 'open', 'filled', 'partial', 'cancelled'
-    side VARCHAR(4) NOT NULL,                       -- 'BUY' or 'SELL'
+    side TEXT NOT NULL,                             -- Encrypted: 'BUY' or 'SELL'
     asset VARCHAR(20) NOT NULL,                     -- Token symbol (e.g., 'BTC', 'ETH')
     quote_asset VARCHAR(20) NOT NULL DEFAULT 'USDC',-- Quote currency
-    order_value DECIMAL(24, 8) NOT NULL,            -- Total value in quote asset
-    size DECIMAL(24, 8) NOT NULL,                   -- Amount of asset
-    filled DECIMAL(24, 8) NOT NULL DEFAULT 0,       -- Amount filled so far
-    price DECIMAL(24, 8) NOT NULL,                  -- Price per unit
+    order_value TEXT NOT NULL,                      -- Encrypted: total value in quote asset
+    size TEXT NOT NULL,                             -- Encrypted: amount of asset
+    filled TEXT NOT NULL,                           -- Encrypted: amount filled so far
+    price TEXT NOT NULL,                            -- Encrypted: price per unit
     proof_hash VARCHAR(66),                         -- ZK proof transaction hash (optional)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
-    CONSTRAINT check_side CHECK (side IN ('BUY', 'SELL')),
-    CONSTRAINT check_status CHECK (status IN ('open', 'filled', 'partial', 'cancelled')),
-    CONSTRAINT check_filled CHECK (filled <= size)
+
+    CONSTRAINT check_status CHECK (status IN ('open', 'filled', 'partial', 'cancelled'))
 );
 
 -- 2. Create indexes for common queries

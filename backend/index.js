@@ -8,6 +8,7 @@ const util = require("util");
 const execPromise = util.promisify(exec);
 const fs = require("fs").promises;
 const { supabase } = require("./lib/supabase");
+const { encryptOrder, decryptOrder, decryptOrders, encrypt } = require("./lib/crypto");
 const snarkjs = require("snarkjs");
 
 const app = express();
@@ -585,9 +586,11 @@ app.post("/api/orders/cancel-all-open", async (req, res) => {
 });
 
 // GET all orders (with optional filters)
+// If user_address is provided, returns decrypted orders for that user.
+// Otherwise returns redacted orders (sensitive fields stripped).
 app.get("/api/orders", async (req, res) => {
   try {
-    const { user_address, status, asset, side } = req.query;
+    const { user_address, status, asset } = req.query;
 
     let query = supabase
       .from("orders")
@@ -598,21 +601,37 @@ app.get("/api/orders", async (req, res) => {
       query = query.eq("user_address", user_address.toLowerCase());
     if (status) query = query.eq("status", status);
     if (asset) query = query.eq("asset", asset);
-    if (side) query = query.eq("side", side);
 
     const { data, error } = await query;
 
     if (error) throw error;
-    res.json(data);
+
+    if (user_address) {
+      // Owner requesting their own orders — decrypt
+      res.json(decryptOrders(data || []));
+    } else {
+      // Public query — return only non-sensitive fields
+      const redacted = (data || []).map((order) => ({
+        id: order.id,
+        status: order.status,
+        asset: order.asset,
+        quote_asset: order.quote_asset,
+        proof_hash: order.proof_hash,
+        created_at: order.created_at,
+        updated_at: order.updated_at,
+      }));
+      res.json(redacted);
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET single order by ID
+// GET single order by ID (decrypted for owner, requires user_address query param)
 app.get("/api/orders/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    const { user_address } = req.query;
 
     const { data, error } = await supabase
       .from("orders")
@@ -623,13 +642,28 @@ app.get("/api/orders/:id", async (req, res) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Order not found" });
 
-    res.json(data);
+    // Only decrypt if the requester is the order owner
+    if (user_address && data.user_address === user_address.toLowerCase()) {
+      res.json(decryptOrder(data));
+    } else {
+      // Return non-sensitive fields only (encrypted fields redacted)
+      res.json({
+        id: data.id,
+        user_address: data.user_address,
+        status: data.status,
+        asset: data.asset,
+        quote_asset: data.quote_asset,
+        proof_hash: data.proof_hash,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
+      });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST create new order
+// POST create new order (legacy endpoint — also encrypts)
 app.post("/api/orders", async (req, res) => {
   try {
     const {
@@ -642,7 +676,6 @@ app.post("/api/orders", async (req, res) => {
       proof_hash,
     } = req.body;
 
-    // Validate required fields
     if (!user_address || !side || !asset || !size || !price) {
       return res.status(400).json({
         error:
@@ -650,28 +683,29 @@ app.post("/api/orders", async (req, res) => {
       });
     }
 
-    // Calculate order value
     const order_value = parseFloat(size) * parseFloat(price);
+
+    const plainOrder = {
+      user_address: user_address.toLowerCase(),
+      side,
+      asset,
+      quote_asset,
+      size,
+      price,
+      order_value,
+      proof_hash,
+      status: "open",
+      filled: 0,
+    };
 
     const { data, error } = await supabase
       .from("orders")
-      .insert({
-        user_address: user_address.toLowerCase(),
-        side,
-        asset,
-        quote_asset,
-        size,
-        price,
-        order_value,
-        proof_hash,
-        status: "open",
-        filled: 0,
-      })
+      .insert(encryptOrder(plainOrder))
       .select()
       .single();
 
     if (error) throw error;
-    res.status(201).json(data);
+    res.status(201).json(decryptOrder(data));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -681,12 +715,20 @@ app.post("/api/orders", async (req, res) => {
 app.patch("/api/orders/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
 
     // Prevent updating certain fields
     delete updates.id;
     delete updates.created_at;
     delete updates.user_address;
+
+    // Encrypt any sensitive fields being updated
+    const sensitiveFields = ['side', 'size', 'price', 'order_value', 'filled'];
+    for (const field of sensitiveFields) {
+      if (updates[field] !== undefined) {
+        updates[field] = encrypt(String(updates[field]));
+      }
+    }
 
     const { data, error } = await supabase
       .from("orders")
@@ -698,7 +740,7 @@ app.patch("/api/orders/:id", async (req, res) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Order not found" });
 
-    res.json(data);
+    res.json(decryptOrder(data));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -723,13 +765,13 @@ app.delete("/api/orders/:id", async (req, res) => {
         .status(404)
         .json({ error: "Order not found or already filled/cancelled" });
 
-    res.json({ message: "Order cancelled", order: data });
+    res.json({ message: "Order cancelled", order: decryptOrder(data) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET orders by user address
+// GET orders by user address (always decrypted — owner is requesting their own orders)
 app.get("/api/users/:address/orders", async (req, res) => {
   try {
     const { address } = req.params;
@@ -746,7 +788,7 @@ app.get("/api/users/:address/orders", async (req, res) => {
     const { data, error } = await query;
 
     if (error) throw error;
-    res.json(data);
+    res.json(decryptOrders(data || []));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -769,23 +811,34 @@ app.get("/api/users/:address/orders", async (req, res) => {
 async function findMatch(order) {
   const oppositeSide = order.side === "BUY" ? "SELL" : "BUY";
 
-  const { data: candidates, error } = await supabase
+  // Query all open orders for the same asset (can't filter encrypted 'side' in DB)
+  const { data: rawCandidates, error } = await supabase
     .from("orders")
     .select("*")
     .eq("status", "open")
     .eq("asset", order.asset)
-    .eq("side", oppositeSide)
     .neq("user_address", order.user_address.toLowerCase())
     .order("created_at", { ascending: true }); // FIFO matching
 
   if (error) throw error;
-  if (!candidates || candidates.length === 0) {
+  if (!rawCandidates || rawCandidates.length === 0) {
+    console.log("No open orders found for", order.asset);
+    return null;
+  }
+
+  // Decrypt candidates and filter by opposite side
+  const decryptedCandidates = decryptOrders(rawCandidates);
+  const matchingCandidates = decryptedCandidates.filter(
+    (c) => c.side === oppositeSide
+  );
+
+  if (matchingCandidates.length === 0) {
     console.log("No open opposite-side orders found for", order.asset);
     return null;
   }
 
   // Take the first (oldest) matching order
-  const candidate = candidates[0];
+  const candidate = matchingCandidates[0];
 
   console.log(`Match found: ${candidate.id.slice(0, 8)} (${candidate.side} ${candidate.size} ${candidate.asset})`);
 
@@ -828,33 +881,39 @@ app.post("/api/orders/submit", async (req, res) => {
     // Calculate order value
     const order_value = parseFloat(size) * parseFloat(price);
 
-    // Create the order first
+    // Encrypt sensitive fields before storing
+    const plainOrder = {
+      user_address: user_address.toLowerCase(),
+      side,
+      asset,
+      quote_asset,
+      size,
+      price,
+      order_value,
+      status: "open",
+      filled: 0,
+    };
+    const encryptedRow = encryptOrder(plainOrder);
+
+    // Create the order with encrypted fields
     const { data: newOrder, error: insertError } = await supabase
       .from("orders")
-      .insert({
-        user_address: user_address.toLowerCase(),
-        side,
-        asset,
-        quote_asset,
-        size,
-        price,
-        order_value,
-        status: "open",
-        filled: 0,
-      })
+      .insert(encryptedRow)
       .select()
       .single();
 
     if (insertError) throw insertError;
 
-    console.log("New order created:", newOrder);
+    // Decrypt for logging and downstream use (matching, response)
+    const decryptedOrder = decryptOrder(newOrder);
+    console.log("New order created (encrypted in DB):", decryptedOrder.id);
 
-    // Try to find a match (no status change - orders stay "open")
-    const match = await findMatch(newOrder);
+    // Try to find a match (findMatch decrypts candidates internally)
+    const match = await findMatch(decryptedOrder);
 
     if (match) {
       console.log("Match found!", {
-        newOrder: newOrder.id.slice(0, 8),
+        newOrder: decryptedOrder.id.slice(0, 8),
         matchedWith: match.matchedOrder.id.slice(0, 8),
         buyer: match.buyer.user_address,
         seller: match.seller.user_address,
@@ -862,10 +921,9 @@ app.post("/api/orders/submit", async (req, res) => {
         size: match.matchSize,
       });
 
-      // Return match info for frontend to execute settlement
-      // Orders stay "open" until settlement is confirmed on-chain
+      // Return decrypted order + match info for frontend to execute settlement
       res.json({
-        order: newOrder,
+        order: decryptedOrder,
         matched: true,
         match: {
           matchedOrderId: match.matchedOrder.id,
@@ -880,7 +938,7 @@ app.post("/api/orders/submit", async (req, res) => {
     } else {
       console.log("No match found, order added to book");
       res.json({
-        order: newOrder,
+        order: decryptedOrder,
         matched: false,
         message: "Order added to order book, waiting for match",
       });
@@ -896,10 +954,10 @@ app.post("/api/orders/settle", async (req, res) => {
   try {
     const { orderId, matchedOrderId, txHash, filledSize } = req.body;
 
-    // Update both orders from "open" to "filled"
+    // Encrypt the filled amount before storing
     const updates = {
       status: "filled",
-      filled: filledSize,
+      filled: encrypt(String(filledSize)),
       proof_hash: txHash,
     };
 
@@ -927,7 +985,7 @@ app.post("/api/orders/settle", async (req, res) => {
 
     res.json({
       message: "Both orders settled",
-      orders: [result1.data, result2.data],
+      orders: [decryptOrder(result1.data), decryptOrder(result2.data)],
     });
   } catch (error) {
     console.error("Settlement error:", error);
