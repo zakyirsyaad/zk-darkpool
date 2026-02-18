@@ -1,6 +1,12 @@
 'use client'
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import type { ComponentProps } from 'react';
 import { Button } from './ui/button';
+
+type RenderProps = Parameters<
+    NonNullable<ComponentProps<typeof ConnectButton.Custom>['children']>
+>[0];
+
 export const ConnectButtonCustom = () => {
     return (
         <ConnectButton.Custom>
@@ -12,7 +18,7 @@ export const ConnectButtonCustom = () => {
                 openConnectModal,
                 authenticationStatus,
                 mounted,
-            }) => {
+            }: RenderProps) => {
                 // Note: If your app doesn't use authentication, you
                 // can remove all 'authenticationStatus' checks
                 const ready = mounted && authenticationStatus !== 'loading';

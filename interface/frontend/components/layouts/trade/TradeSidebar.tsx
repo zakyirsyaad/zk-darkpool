@@ -1,6 +1,6 @@
 'use client'
 import React from 'react'
-import Amount from '@/components/layouts/trade/Amount'
+import Amount, { type InputMode } from '@/components/layouts/trade/Amount'
 import Balance from '@/components/layouts/trade/Balance'
 import Info from '@/components/layouts/trade/Info'
 import Options from '@/components/layouts/trade/Options'
@@ -30,6 +30,7 @@ type TradeStatus =
 
 export default function TradeSidebar({ token }: { token: string }) {
   const [amount, setAmount] = React.useState('')
+  const [inputMode, setInputMode] = React.useState<InputMode>('token')
   const [side, setSide] = React.useState<'BUY' | 'SELL'>('BUY')
   const [status, setStatus] = React.useState<TradeStatus>('idle')
   const [txHash, setTxHash] = React.useState<string>('')
@@ -47,6 +48,23 @@ export default function TradeSidebar({ token }: { token: string }) {
   // Token balances for insufficient balance check
   const baseBalance = useTokenBalance(token)
   const quoteBalance = useTokenBalance('USDC')
+
+  const midpoint = ticker?.midpoint ?? 0
+
+  const tokenSize = React.useMemo(() => {
+    const val = parseFloat(amount)
+    if (!val || val <= 0 || !midpoint) return 0
+    return inputMode === 'token' ? val : val / midpoint
+  }, [amount, inputMode, midpoint])
+
+  const equivalentDisplay = React.useMemo(() => {
+    const val = parseFloat(amount)
+    if (!val || val <= 0 || !midpoint) return ''
+    if (inputMode === 'token') {
+      return `≈ ${(val * midpoint).toFixed(2)} USDC`
+    }
+    return `≈ ${(val / midpoint).toFixed(6)} ${token}`
+  }, [amount, inputMode, midpoint, token])
 
   // Track the current order ID for polling
   const [currentOrderId, setCurrentOrderId] = React.useState<string | null>(null)
@@ -82,22 +100,18 @@ export default function TradeSidebar({ token }: { token: string }) {
   const isLoading = status !== 'idle' && status !== 'success' && status !== 'error' && status !== 'waiting_match'
   const isOrderActive = status === 'waiting_match' || status === 'success'
 
-  // Insufficient balance check
   const insufficientBalance = React.useMemo(() => {
-    const size = parseFloat(amount)
-    if (!size || size <= 0) return false
+    if (!tokenSize || tokenSize <= 0) return false
 
     if (side === 'BUY') {
-      // Buyer needs enough USDC (quote token)
-      const neededQuote = ticker?.midpoint ? size * ticker.midpoint : 0
+      const neededQuote = midpoint ? tokenSize * midpoint : 0
       const availableQuote = parseFloat(quoteBalance.balance)
       return neededQuote > 0 && availableQuote < neededQuote
     } else {
-      // Seller needs enough base token
       const availableBase = parseFloat(baseBalance.balance)
-      return availableBase < size
+      return availableBase < tokenSize
     }
-  }, [amount, side, ticker?.midpoint, baseBalance.balance, quoteBalance.balance])
+  }, [tokenSize, side, midpoint, baseBalance.balance, quoteBalance.balance])
 
   const getStatusMessage = () => {
     switch (status) {
@@ -128,8 +142,7 @@ export default function TradeSidebar({ token }: { token: string }) {
       return
     }
 
-    const size = parseFloat(amount)
-    if (!size || size <= 0) {
+    if (!tokenSize || tokenSize <= 0) {
       alert('Please enter a valid amount')
       return
     }
@@ -163,7 +176,7 @@ export default function TradeSidebar({ token }: { token: string }) {
         side,
         asset: token.toUpperCase(),
         quote_asset: 'USDC',
-        size: amount,
+        size: tokenSize.toString(),
         price: ticker.midpoint.toString(),
       })
 
@@ -290,14 +303,14 @@ export default function TradeSidebar({ token }: { token: string }) {
         setStatus('approving')
 
         if (side === 'BUY' && quoteTokenAddress) {
-          const estimatedQuote = size * ticker.midpoint
-          const bufferedQuote = estimatedQuote * 1.1 // 10% buffer
+          const estimatedQuote = tokenSize * ticker.midpoint
+          const bufferedQuote = estimatedQuote * 1.1
           const quoteAmountWei = parseUnits(bufferedQuote.toFixed(6), 18)
           console.log(`No match - approving ${bufferedQuote.toFixed(2)} USDC (with 10% buffer) as buyer...`)
           await approveToken(quoteTokenAddress as `0x${string}`, quoteAmountWei)
         } else if (side === 'SELL' && baseTokenAddress) {
-          const baseAmountWei = parseUnits(size.toString(), 18)
-          console.log(`No match - approving ${size} ${token} (base token) as seller...`)
+          const baseAmountWei = parseUnits(tokenSize.toString(), 18)
+          console.log(`No match - approving ${tokenSize} ${token} (base token) as seller...`)
           await approveToken(baseTokenAddress as `0x${string}`, baseAmountWei)
         }
 
@@ -351,20 +364,22 @@ export default function TradeSidebar({ token }: { token: string }) {
         side={side}
         onSubmit={handleSubmit}
         isLoading={isLoading || isPending}
-        disabled={!isConnected || insufficientBalance || isOrderActive}
+        disabled={!isConnected || isOrderActive}
         buttonLabel={getButtonLabel()}
         insufficientBalance={insufficientBalance}
+        inputMode={inputMode}
+        onToggleInputMode={() => setInputMode(m => m === 'token' ? 'usdc' : 'token')}
+        equivalentDisplay={equivalentDisplay}
       />
-      <Info token={token} amount={amount} />
+      <Info token={token} amount={tokenSize.toString()} />
 
       {/* Status indicator */}
       {status !== 'idle' && (
-        <div className={`text-sm p-3 rounded space-y-1 ${
-          status === 'success' ? 'bg-green-500/10 text-green-500' :
-          status === 'error' ? 'bg-red-500/10 text-red-500' :
-          status === 'waiting_match' ? 'bg-yellow-500/10 text-yellow-500' :
-          'bg-blue-500/10 text-blue-500'
-        }`}>
+        <div className={`text-sm p-3 rounded space-y-1 ${status === 'success' ? 'bg-green-500/10 text-green-500' :
+            status === 'error' ? 'bg-red-500/10 text-red-500' :
+              status === 'waiting_match' ? 'bg-yellow-500/10 text-yellow-500' :
+                'bg-blue-500/10 text-blue-500'
+          }`}>
           <p className="font-medium">{getStatusMessage()}</p>
 
           {status === 'waiting_match' && (
