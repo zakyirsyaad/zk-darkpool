@@ -2,9 +2,9 @@ arbitrum RPC = https://sepolia-rollup.arbitrum.io/rpc
 base RPC = 
 
 VERIFIER ADDRESS = 0x05F17Cfc5278Ba252459316E689f28eDC26a58b8
-BASE TOKEN = 0x196c951CBA28dD804714d084cd8a6DeDBE53127e
-QUOTE TOKEN = 0xBCD0Cf51550373aC5aDfD46Ff7134Ad1Cd725cEC
-DarkPool ADDRESS = 0x11dB70F30532318089D5F17ef803750bcb980Abf
+BASE TOKEN = 0x84c95657D037646E1F80A77b0740C1fa03B8B292
+QUOTE TOKEN = 0xAc2132e6E9c15f2d67772678aEB3adad663C35e3
+DarkPool ADDRESS = 0x01b25b632E6c97817D47E600A5442aa828C1bca4
 
 
 # 1. Deploy Verifier
@@ -56,3 +56,14 @@ forge verify-contract \
 
 
   forge verify-contract 0xaACDbc35FcDdc9A86e3F6DeC3bA0f3012e98F84D contracts/MockERC20.sol:MockERC20 --chain-id 421614 --etherscan-api-key W1FN57MAGDBNNGAQNGDTP8IWXGM262C2AV --constructor-args 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160
+
+  # Ganti YOUR_PRIVATE_KEY dan AMOUNT (dalam satuan USDC, contoh 10 = 10 USDC)
+cast send 0xBCD0Cf51550373aC5aDfD46Ff7134Ad1Cd725cEC "transfer(address,uint256)" 0x5F23996dc45CABec6aa47cEA4B6Ef2484B330F9D 1000000 \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160
+
+  forge create contracts/DarkPool.sol:DarkPool \
+  --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
+  --broadcast \
+  --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160 \
+  --constructor-args 0x05F17Cfc5278Ba252459316E689f28eDC26a58b8 0x84c95657D037646E1F80A77b0740C1fa03B8B292 0xAc2132e6E9c15f2d67772678aEB3adad663C35e3
