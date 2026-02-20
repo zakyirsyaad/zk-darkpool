@@ -219,7 +219,7 @@ app.post("/match-and-settle", async (req, res) => {
       wasmPath,
       zkeyPath,
     );
-    const publicInputs = publicSignals.map((x) => String(x))
+    const publicInputs = publicSignals.map((x) => String(x));
 
     // Log public inputs to verify circuit output
     // Circom output order: outputs first (valid), then public inputs in declaration order
