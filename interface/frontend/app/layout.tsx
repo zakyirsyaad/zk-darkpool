@@ -31,7 +31,7 @@ export const metadata: Metadata = {
     type: "website",
     images: [
       {
-        url: "https://tovxnutbetroznalrzzp.supabase.co/storage/v1/object/public/media/logo2.png", // URL gambar untuk Open Graph
+        url: "https://tovxnutbetroznalrzzp.supabase.co/storage/v1/object/public/media/logo2.png", // Image URL for Open Graph
         alt: "DARX - Crypto Dark Pool",
         width: 1200,
         height: 630,

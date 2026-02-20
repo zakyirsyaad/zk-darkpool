@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
 
-# Database (schema/migrations — keep local only, jangan di-commit)
+# Database (schema/migrations — keep local only, do not commit)
 database/
 
 # Environment & secrets

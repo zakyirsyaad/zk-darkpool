@@ -3,11 +3,11 @@ import { useEffect, useState, useRef } from "react";
 import { API_BASE_URL } from "@/constants/api";
 
 /**
- * Custom hook untuk mendapatkan harga real-time dari Binance.
- * Coba WebSocket dulu; bila gagal/diblokir, fallback ke REST via backend.
- * @param symbol - Symbol token (contoh: 'BTC', 'ETH')
+ * Custom hook for real-time price from Binance.
+ * Tries WebSocket first; on failure/blocked, falls back to REST via backend.
+ * @param symbol - Token symbol (e.g. 'BTC', 'ETH')
  * @param pair - Trading pair (default: 'USDT')
- * @returns Harga token dalam bentuk number
+ * @returns Token price as number
  */
 export function useBinancePrice(symbol: string, pair: string = "USDT") {
   const [price, setPrice] = useState(0);

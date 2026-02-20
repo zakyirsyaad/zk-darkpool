@@ -2,23 +2,23 @@
 import { useEffect, useState } from "react";
 
 /**
- * Custom hook untuk mendapatkan harga real-time dari Coinbase WebSocket
- * @param symbol - Symbol token (contoh: 'BTC', 'ETH')
- * @param pair - Trading pair (default: 'USD' untuk Coinbase)
- * @returns Harga token dalam bentuk number
+ * Custom hook for real-time price from Coinbase WebSocket
+ * @param symbol - Token symbol (e.g. 'BTC', 'ETH')
+ * @param pair - Trading pair (default: 'USD' for Coinbase)
+ * @returns Token price as number
  */
 export function useCoinbasePrice(symbol: string, pair: string = "USD") {
   const [price, setPrice] = useState(0);
 
   useEffect(() => {
-    // Format product ID untuk Coinbase (contoh: BTC-USD)
+    // Coinbase product ID format (e.g. BTC-USD)
     const productId = `${symbol}-${pair}`;
 
     // Coinbase Advanced Trade WebSocket
     const ws = new WebSocket("wss://advanced-trade-ws.coinbase.com");
 
     ws.onopen = () => {
-      // Subscribe ke ticker channel untuk real-time price updates
+      // Subscribe to ticker channel for real-time price updates
       ws.send(
         JSON.stringify({
           type: "subscribe",
@@ -37,7 +37,7 @@ export function useCoinbasePrice(symbol: string, pair: string = "USD") {
           const tickerEvent = data.events[0];
           if (tickerEvent && tickerEvent.tickers && tickerEvent.tickers[0]) {
             const ticker = tickerEvent.tickers[0];
-            // Price ada di field 'price' atau 'last_price'
+            // Price is in 'price' or 'last_price' field
             const priceValue = ticker.price || ticker.last_price;
             if (priceValue) {
               setPrice(parseFloat(priceValue));
@@ -57,7 +57,7 @@ export function useCoinbasePrice(symbol: string, pair: string = "USD") {
       console.log("Coinbase WebSocket connection closed");
     };
 
-    // Bersihkan koneksi saat komponen tidak lagi digunakan (unmount)
+    // Clean up connection on unmount
     return () => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();

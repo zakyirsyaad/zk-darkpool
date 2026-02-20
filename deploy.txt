@@ -36,7 +36,7 @@ forge create contracts/MockERC20.sol:MockERC20 \
 
 # Output: Deployed to: 0x9abc...
 
-# 4. Deploy DarkPool (ganti dengan address yang didapat dari langkah 1-3)
+# 4. Deploy DarkPool (replace with addresses from steps 1-3)
 forge create contracts/DarkPool.sol:DarkPool \
   --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
   --broadcast \
@@ -57,7 +57,7 @@ forge verify-contract \
 
   forge verify-contract 0xaACDbc35FcDdc9A86e3F6DeC3bA0f3012e98F84D contracts/MockERC20.sol:MockERC20 --chain-id 421614 --etherscan-api-key W1FN57MAGDBNNGAQNGDTP8IWXGM262C2AV --constructor-args 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160
 
-  # Ganti YOUR_PRIVATE_KEY dan AMOUNT (dalam satuan USDC, contoh 10 = 10 USDC)
+  # Replace YOUR_PRIVATE_KEY and AMOUNT (in USDC units, e.g. 10 = 10 USDC)
 cast send 0xBCD0Cf51550373aC5aDfD46Ff7134Ad1Cd725cEC "transfer(address,uint256)" 0x5F23996dc45CABec6aa47cEA4B6Ef2484B330F9D 1000000 \
   --rpc-url https://sepolia-rollup.arbitrum.io/rpc \
   --private-key 0x430be883d557fdf987b9ba2a7c46298add3df8f381a3e58422703d5300d94160

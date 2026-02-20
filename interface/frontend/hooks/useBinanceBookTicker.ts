@@ -11,11 +11,11 @@ export interface BookTickerData {
 }
 
 /**
- * Custom hook untuk mendapatkan best bid/ask real-time
+ * Custom hook for real-time best bid/ask
  * Tries WebSocket first, falls back to backend proxy polling if WebSocket fails
- * @param symbol - Symbol token (contoh: 'BTC', 'ETH')
+ * @param symbol - Token symbol (e.g. 'BTC', 'ETH')
  * @param pair - Trading pair (default: 'USDT')
- * @returns BookTickerData dengan bestBid, bestAsk, midpoint, spread
+ * @returns BookTickerData with bestBid, bestAsk, midpoint, spread
  */
 export function useBinanceBookTicker(symbol: string, pair: string = "USDT") {
   const [data, setData] = useState<BookTickerData>({

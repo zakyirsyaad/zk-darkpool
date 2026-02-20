@@ -1,6 +1,6 @@
 import { arbitrum, arbitrumSepolia, base } from "viem/chains";
 
-// Mapping token symbol ke contract address untuk berbagai network
+// Token symbol to contract address per network
 export const TOKEN_ADDRESSES: Record<string, Record<number, string>> = {
   BTC: {
     [arbitrum.id]: "0x2f5e87c9312fa29aed5c179e456625d79015299c", // WBTC on Arbitrum
