@@ -19,8 +19,8 @@ yarn-error.log*
 
 # Runtime
 dist/
-build/
 out/
+# backend/build/ is kept — contains circuit wasm/zkey for proof generation (copy from root build/)
 
 # OS
 .DS_Store
@@ -34,9 +34,11 @@ Thumbs.db
 
 # Snark/ZK artifacts (generated circuits, proofs)
 *.wtns
-*.zkey
 *.ptau
 proofs/
+*.zkey
+# Allow .zkey inside backend/build/ for deployment
+!build/*.zkey
 
 # Optional: uncomment if you use
 # coverage/
