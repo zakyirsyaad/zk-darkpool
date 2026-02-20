@@ -2,23 +2,23 @@
 import { useEffect, useState } from 'react'
 
 /**
- * Custom hook untuk mendapatkan harga real-time dari OKX WebSocket
- * @param symbol - Symbol token (contoh: 'BTC', 'ETH')
+ * Custom hook for real-time price from OKX WebSocket
+ * @param symbol - Token symbol (e.g. 'BTC', 'ETH')
  * @param pair - Trading pair (default: 'USDT')
- * @returns Harga token dalam bentuk number
+ * @returns Token price as number
  */
 export function useOKXPrice(symbol: string, pair: string = 'USDT') {
     const [price, setPrice] = useState(0);
 
     useEffect(() => {
-        // Format instrument ID untuk OKX (contoh: BTC-USDT)
+        // OKX instrument ID format (e.g. BTC-USDT)
         const instId = `${symbol}-${pair}`;
         
         // OKX WebSocket v5 Public
         const ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
 
         ws.onopen = () => {
-            // Subscribe ke tickers channel untuk real-time price updates
+            // Subscribe to tickers channel for real-time price updates
             ws.send(JSON.stringify({
                 op: 'subscribe',
                 args: [
@@ -37,7 +37,7 @@ export function useOKXPrice(symbol: string, pair: string = 'USDT') {
                 // Handle ticker update
                 if (data.arg && data.arg.channel === 'tickers' && data.data && data.data.length > 0) {
                     const ticker = data.data[0];
-                    // Price ada di field 'last'
+                    // Price is in 'last' field
                     const priceValue = ticker.last;
                     if (priceValue) {
                         setPrice(parseFloat(priceValue));
@@ -56,7 +56,7 @@ export function useOKXPrice(symbol: string, pair: string = 'USDT') {
             console.log('OKX WebSocket connection closed');
         };
 
-        // Bersihkan koneksi saat komponen tidak lagi digunakan (unmount)
+        // Clean up connection on unmount
         return () => {
             if (ws.readyState === WebSocket.OPEN) {
                 ws.close();

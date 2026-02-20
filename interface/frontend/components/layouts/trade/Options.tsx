@@ -56,7 +56,7 @@ export default function Options({
                     return
                 }
 
-                // Convert ke format yang mudah digunakan
+                // Convert to an easy-to-use format
                 const prices: Record<string, number> = {}
                 data.forEach((item: { symbol: string; price: string }) => {
                     const symbol = item.symbol.replace('USDT', '')

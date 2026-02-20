@@ -3,7 +3,7 @@ import { useAccount, useBalance, useReadContracts } from "wagmi";
 import { formatUnits } from "viem";
 import { TOKEN_ADDRESSES } from "@/constants/tokens";
 
-// ERC20 ABI untuk balanceOf
+// ERC20 ABI for balanceOf
 const ERC20_ABI = [
   {
     inputs: [{ name: "account", type: "address" }],
@@ -22,9 +22,9 @@ const ERC20_ABI = [
 ] as const;
 
 /**
- * Custom hook untuk mendapatkan balance token dari wallet
- * @param symbol - Symbol token (contoh: 'BTC', 'ETH', 'USDC')
- * @returns Balance token dalam bentuk string (formatted) dan raw bigint
+ * Custom hook to get token balance from wallet
+ * @param symbol - Token symbol (e.g. 'BTC', 'ETH', 'USDC')
+ * @returns Token balance as formatted string and raw bigint
  */
 export function useTokenBalance(symbol: string) {
   const { address, chainId, isConnected } = useAccount();

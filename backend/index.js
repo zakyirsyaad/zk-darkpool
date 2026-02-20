@@ -3,9 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const https = require("https");
-const { exec } = require("child_process");
-const util = require("util");
-const execPromise = util.promisify(exec);
+const path = require("path");
 const fs = require("fs").promises;
 const { supabase } = require("./lib/supabase");
 const {
@@ -211,19 +209,17 @@ app.post("/match-and-settle", async (req, res) => {
       diffPercent: Number((diff * 100n) / actualQuote) + "%",
     });
 
-    await fs.writeFile("input.json", JSON.stringify(input));
+    // 3. Generate proof via snarkjs in-process (no npx/shell — works on Vercel/serverless)
+    const buildDir = path.resolve(__dirname, "build");
+    const wasmPath = path.join(buildDir, "trade_check_js", "trade_check.wasm");
+    const zkeyPath = path.join(buildDir, "circuit_final.zkey");
 
-    // 3. Generate witness & proof
-    await execPromise(
-      "node ../build/trade_check_js/generate_witness.js ../build/trade_check_js/trade_check.wasm input.json witness.wtns",
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+      input,
+      wasmPath,
+      zkeyPath,
     );
-    await execPromise(
-      "npx snarkjs groth16 prove ../build/circuit_final.zkey witness.wtns proof.json public.json",
-    );
-
-    // 4. Baca proof & public
-    const proof = JSON.parse(await fs.readFile("proof.json", "utf8"));
-    const publicInputs = JSON.parse(await fs.readFile("public.json", "utf8"));
+    const publicInputs = publicSignals.map((x) => String(x));
 
     // Log public inputs to verify circuit output
     // Circom output order: outputs first (valid), then public inputs in declaration order
@@ -289,7 +285,7 @@ app.post("/match-and-settle", async (req, res) => {
       publicInputs: calldataJson[3],
     });
 
-    // 6. Kembalikan ke frontend dalam format yang benar untuk Ethereum
+    // 6. Return to frontend in the correct format for Ethereum
     res.json({
       a: calldataJson[0],
       b: calldataJson[1],
@@ -301,8 +297,7 @@ app.post("/match-and-settle", async (req, res) => {
   }
 });
 
-// 1. Daftar koin yang kamu masukkan manual
-// Kamu bisa menambah atau mengurangi list ini kapan saja
+// 1. Manually configured token list (add or remove as needed)
 const MY_WALLET_TOKENS = [
   { symbol: "ARB", address: "0x912ce59144191c1204e64559fe8253a0e49e6548" },
   { symbol: "GMX", address: "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a" },
@@ -310,10 +305,10 @@ const MY_WALLET_TOKENS = [
   { symbol: "MAGIC", address: "0x539bde0d7dbd3d5263e94ff56b653215170d2712" },
 ];
 
-// 2. Endpoint untuk mengambil harga token manual tersebut
+// 2. Endpoint to fetch prices for the above tokens
 app.get("/api/my-tokens", async (req, res) => {
   try {
-    // Ambil semua address dan gabungkan dengan koma
+    // Collect all addresses and join with comma
     const addresses = MY_WALLET_TOKENS.map((t) => t.address).join(",");
 
     // Fetch ke DexScreener
@@ -324,7 +319,7 @@ app.get("/api/my-tokens", async (req, res) => {
 
     // Mapping data agar hasilnya rapi dan sesuai urutan input manual
     const result = MY_WALLET_TOKENS.map((token) => {
-      // Cari data yang match dengan address
+      // Find pair data matching the token address
       const marketData = pairs.find(
         (p) =>
           p.baseToken.address.toLowerCase() === token.address.toLowerCase(),
@@ -344,7 +339,7 @@ app.get("/api/my-tokens", async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Gagal mengambil data dari blockchain" });
+    res.status(500).json({ message: "Failed to fetch data from blockchain" });
   }
 });
 
