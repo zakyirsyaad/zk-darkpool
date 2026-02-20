@@ -3,11 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const https = require("https");
-const os = require("os");
 const path = require("path");
-const { exec } = require("child_process");
-const util = require("util");
-const execPromise = util.promisify(exec);
 const fs = require("fs").promises;
 const { supabase } = require("./lib/supabase");
 const {
@@ -213,35 +209,17 @@ app.post("/match-and-settle", async (req, res) => {
       diffPercent: Number((diff * 100n) / actualQuote) + "%",
     });
 
-    // Use temp dir (writable on Vercel/serverless and avoids EACCES locally)
-    const tmpDir = path.join(
-      os.tmpdir(),
-      "darx-proof-" + Date.now() + "-" + Math.random().toString(36).slice(2),
-    );
-    await fs.mkdir(tmpDir, { recursive: true });
-    const inputPath = path.join(tmpDir, "input.json");
-    const witnessPath = path.join(tmpDir, "witness.wtns");
-    const proofPath = path.join(tmpDir, "proof.json");
-    const publicPath = path.join(tmpDir, "public.json");
-
-    await fs.writeFile(inputPath, JSON.stringify(input));
-
-    // 3. Generate witness & proof (paths absolute; circuit artifacts in backend/build/)
+    // 3. Generate proof via snarkjs in-process (no npx/shell — works on Vercel/serverless)
     const buildDir = path.resolve(__dirname, "build");
-    await execPromise(
-      `node "${path.join(buildDir, "trade_check_js", "generate_witness.js")}" "${path.join(buildDir, "trade_check_js", "trade_check.wasm")}" "${inputPath}" "${witnessPath}"`,
-    );
-    await execPromise(
-      `npx snarkjs groth16 prove "${path.join(buildDir, "circuit_final.zkey")}" "${witnessPath}" "${proofPath}" "${publicPath}"`,
-    );
+    const wasmPath = path.join(buildDir, "trade_check_js", "trade_check.wasm");
+    const zkeyPath = path.join(buildDir, "circuit_final.zkey");
 
-    // 4. Baca proof & public
-    const proof = JSON.parse(await fs.readFile(proofPath, "utf8"));
-    const publicInputs = JSON.parse(await fs.readFile(publicPath, "utf8"));
-
-    try {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch (_) {}
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+      input,
+      wasmPath,
+      zkeyPath,
+    );
+    const publicInputs = publicSignals.map((x) => String(x))
 
     // Log public inputs to verify circuit output
     // Circom output order: outputs first (valid), then public inputs in declaration order
