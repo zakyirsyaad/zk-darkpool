@@ -36,10 +36,10 @@ export default function Amount({
     isConnectWallet?: boolean
 }) {
     const buttonClass = isConnectWallet
-        ? 'w-full font-bold bg-white text-black hover:bg-gray-100 border border-input'
+        ? 'w-full font-bold bg-white text-black hover:bg-gray-100 border border-input h-12 text-lg'
         : insufficientBalance
-            ? 'w-full font-bold bg-zinc-600 hover:bg-zinc-600 cursor-not-allowed opacity-70'
-            : `w-full font-bold ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`
+            ? 'w-full font-bold bg-zinc-600 hover:bg-zinc-600 cursor-not-allowed opacity-70 h-12 text-lg'
+            : `w-full font-bold h-12 text-lg ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`
 
     const unit = inputMode === 'token' ? token : 'USDC'
 
