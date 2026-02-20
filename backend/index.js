@@ -17,7 +17,18 @@ const {
 const snarkjs = require("snarkjs");
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3001",
+      "http://localhost:3000",
+      "https://www.darxcrypto.xyz",
+      "https://darxcrypto.vercel.app",
+    ],
+    credentials: true,
+  }),
+);
+
 app.use(express.json());
 
 // --- DEV ONLY: allow insecure TLS when network MITM/captive-portal breaks certs ---
@@ -1098,4 +1109,8 @@ app.get("/api/orderbook/:asset", async (req, res) => {
   }
 });
 
-app.listen(3001, () => console.log("Matcher running on port 3001"));
+if (require.main === module) {
+  app.listen(3001, () => console.log("Matcher running on port 3001"));
+}
+
+module.exports = app;

@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Database (schema/migrations — keep local only, jangan di-commit)
+database/
+
 # Environment & secrets
 .env
 .env.local
