@@ -19,6 +19,7 @@ export default function Amount({
     inputMode,
     onToggleInputMode,
     equivalentDisplay,
+    isConnectWallet,
 }: {
     token: string
     amount: string
@@ -32,10 +33,13 @@ export default function Amount({
     inputMode: InputMode
     onToggleInputMode: () => void
     equivalentDisplay: string
+    isConnectWallet?: boolean
 }) {
-    const buttonClass = insufficientBalance
-        ? 'w-full font-bold bg-zinc-600 hover:bg-zinc-600 cursor-not-allowed opacity-70'
-        : `w-full font-bold ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`
+    const buttonClass = isConnectWallet
+        ? 'w-full font-bold bg-white text-black hover:bg-gray-100 border border-input'
+        : insufficientBalance
+            ? 'w-full font-bold bg-zinc-600 hover:bg-zinc-600 cursor-not-allowed opacity-70'
+            : `w-full font-bold ${side === 'BUY' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-600 hover:bg-red-700'}`
 
     const unit = inputMode === 'token' ? token : 'USDC'
 

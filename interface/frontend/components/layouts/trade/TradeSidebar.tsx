@@ -13,6 +13,7 @@ import {
 import { useBinanceBookTicker } from '@/hooks/useBinanceBookTicker'
 import { useTokenBalance } from '@/hooks/useTokenBalance'
 import { useAccount } from 'wagmi'
+import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useDarkPool, generateProof } from '@/hooks/useDarkPool'
 import { parseUnits } from 'viem'
 import { API_BASE_URL } from '@/constants/api'
@@ -54,6 +55,7 @@ export default function TradeSidebar({ token }: { token: string }) {
   }
 
   const { address, isConnected } = useAccount()
+  const { openConnectModal } = useConnectModal()
   const { data: ticker } = useBinanceBookTicker(token.toUpperCase())
   const submitOrder = useSubmitOrder()
   const confirmSettlement = useConfirmSettlement()
@@ -145,6 +147,7 @@ export default function TradeSidebar({ token }: { token: string }) {
   }
 
   const getButtonLabel = () => {
+    if (!isConnected || !address) return 'Connect wallet first'
     if (insufficientBalance) return 'Insufficient Balance'
     if (status === 'waiting_match') return 'Order Placed'
     if (status === 'success') return 'Trade Completed'
@@ -365,6 +368,14 @@ export default function TradeSidebar({ token }: { token: string }) {
     setAlertInfo(null)
   }
 
+  const handlePrimaryAction = () => {
+    if (!isConnected || !address) {
+      openConnectModal?.()
+      return
+    }
+    handleSubmit()
+  }
+
   return (
     <div className='space-y-5 border-x border-b p-5'>
       <Balance token={token} />
@@ -374,15 +385,22 @@ export default function TradeSidebar({ token }: { token: string }) {
         amount={amount}
         onAmountChange={setAmount}
         side={side}
-        onSubmit={handleSubmit}
+        onSubmit={handlePrimaryAction}
         isLoading={isLoading || isPending}
-        disabled={!isConnected || isOrderActive}
+        disabled={(isLoading || isPending) || (isConnected && isOrderActive)}
         buttonLabel={getButtonLabel()}
         insufficientBalance={insufficientBalance}
         inputMode={inputMode}
         onToggleInputMode={() => setInputMode(m => m === 'token' ? 'usdc' : 'token')}
         equivalentDisplay={equivalentDisplay}
+        isConnectWallet={!isConnected || !address}
       />
+      <p className='text-xs text-muted-foreground'>
+        {side === 'BUY'
+          ? `Pay USDC to receive ${token} at Binance midpoint price`
+          : `Sell ${token} to receive USDC at Binance midpoint price`
+        }
+      </p>
       <Info token={token} amount={tokenSize.toString()} />
 
       {/* Status indicator */}
@@ -409,6 +427,8 @@ export default function TradeSidebar({ token }: { token: string }) {
               </button>
             </div>
           )}
+
+
 
           {status === 'success' && savings > 0 && (
             <p className="text-xs">
@@ -462,13 +482,7 @@ export default function TradeSidebar({ token }: { token: string }) {
           </AlertAction>
         </Alert>
       )}
-
-      <p className='text-xs text-muted-foreground'>
-        {side === 'BUY'
-          ? `Pay USDC to receive ${token} at Binance midpoint price`
-          : `Sell ${token} to receive USDC at Binance midpoint price`
-        }
-      </p>
+      <p className='text-sm'>All orders are pre-trade and post-trade private.</p>
     </div>
   )
 }
