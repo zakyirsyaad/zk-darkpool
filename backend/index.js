@@ -8,7 +8,12 @@ const util = require("util");
 const execPromise = util.promisify(exec);
 const fs = require("fs").promises;
 const { supabase } = require("./lib/supabase");
-const { encryptOrder, decryptOrder, decryptOrders, encrypt } = require("./lib/crypto");
+const {
+  encryptOrder,
+  decryptOrder,
+  decryptOrders,
+  encrypt,
+} = require("./lib/crypto");
 const snarkjs = require("snarkjs");
 
 const app = express();
@@ -579,7 +584,10 @@ app.post("/api/orders/cancel-all-open", async (req, res) => {
     if (error) throw error;
 
     console.log(`Cancelled ${data?.length || 0} open orders`);
-    res.json({ message: `Cancelled ${data?.length || 0} open orders`, count: data?.length || 0 });
+    res.json({
+      message: `Cancelled ${data?.length || 0} open orders`,
+      count: data?.length || 0,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -723,7 +731,7 @@ app.patch("/api/orders/:id", async (req, res) => {
     delete updates.user_address;
 
     // Encrypt any sensitive fields being updated
-    const sensitiveFields = ['side', 'size', 'price', 'order_value', 'filled'];
+    const sensitiveFields = ["side", "size", "price", "order_value", "filled"];
     for (const field of sensitiveFields) {
       if (updates[field] !== undefined) {
         updates[field] = encrypt(String(updates[field]));
@@ -829,7 +837,7 @@ async function findMatch(order) {
   // Decrypt candidates and filter by opposite side
   const decryptedCandidates = decryptOrders(rawCandidates);
   const matchingCandidates = decryptedCandidates.filter(
-    (c) => c.side === oppositeSide
+    (c) => c.side === oppositeSide,
   );
 
   if (matchingCandidates.length === 0) {
@@ -840,7 +848,9 @@ async function findMatch(order) {
   // Take the first (oldest) matching order
   const candidate = matchingCandidates[0];
 
-  console.log(`Match found: ${candidate.id.slice(0, 8)} (${candidate.side} ${candidate.size} ${candidate.asset})`);
+  console.log(
+    `Match found: ${candidate.id.slice(0, 8)} (${candidate.side} ${candidate.size} ${candidate.asset})`,
+  );
 
   const matchPrice =
     (parseFloat(order.price) + parseFloat(candidate.price)) / 2;
@@ -981,7 +991,11 @@ app.post("/api/orders/settle", async (req, res) => {
     if (result1.error) throw result1.error;
     if (result2.error) throw result2.error;
 
-    console.log("Both orders settled:", orderId.slice(0, 8), matchedOrderId.slice(0, 8));
+    console.log(
+      "Both orders settled:",
+      orderId.slice(0, 8),
+      matchedOrderId.slice(0, 8),
+    );
 
     res.json({
       message: "Both orders settled",
@@ -998,7 +1012,11 @@ app.post("/api/orders/settle", async (req, res) => {
 app.post("/api/orders/unmatch", async (req, res) => {
   try {
     const { orderId, matchedOrderId } = req.body;
-    console.log("Unmatch requested (no-op, orders already open):", orderId?.slice(0, 8), matchedOrderId?.slice(0, 8));
+    console.log(
+      "Unmatch requested (no-op, orders already open):",
+      orderId?.slice(0, 8),
+      matchedOrderId?.slice(0, 8),
+    );
     res.json({ message: "Orders are already open", orders: [] });
   } catch (error) {
     console.error("Unmatch error:", error);
