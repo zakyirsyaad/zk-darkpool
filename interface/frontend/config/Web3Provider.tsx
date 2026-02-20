@@ -2,14 +2,14 @@
 import React from "react";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { base, arbitrum, arbitrumSepolia } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { darkTheme, getDefaultConfig, RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import "@rainbow-me/rainbowkit/styles.css";
 
 const config = getDefaultConfig({
   appName: "ZK-Darkpool",
   projectId: "45ef42921ef399d259b07a309e442a6f",
-  chains: [arbitrum, base, arbitrumSepolia],
+  chains: [arbitrumSepolia],
   ssr: true, // If your dApp uses server side rendering (SSR)
 });
 
